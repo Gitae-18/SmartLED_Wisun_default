@@ -1,0 +1,3 @@
+../Core/Src/wisun_transport.c:9:6:dbg_dump_uart6	2
+../Core/Src/wisun_transport.c:20:6:wisun_transport_send_blocking	3
+../Core/Src/wisun_transport.c:28:6:wisun_tx_adapter	3

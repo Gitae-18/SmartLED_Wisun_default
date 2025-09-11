@@ -1,0 +1,6 @@
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:41:6:aiPlatformVersion	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:60:6:aiLogErr	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:70:20:aiPrintDataType	4
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:83:6:aiPrintBufferInfo	63
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:149:13:_aiPrintDataInfo	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/aiTestHelper.c:160:6:aiPrintNetworkInfo	7

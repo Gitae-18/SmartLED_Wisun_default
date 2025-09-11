@@ -1,0 +1,13 @@
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:518:9:network_configure_activations	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:555:9:network_configure_weights	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:600:9:ai_network_get_info	4
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:647:9:ai_network_get_report	4
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:694:10:ai_network_get_error	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:701:10:ai_network_create	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:712:10:ai_network_create_and_init	8
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:747:12:ai_network_inputs_get	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:758:12:ai_network_outputs_get	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:769:11:ai_network_destroy	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:776:9:ai_network_init	2
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:793:8:ai_network_run	1
+D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App/network.c:801:8:ai_network_forward	1

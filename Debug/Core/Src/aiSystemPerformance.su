@@ -1,0 +1,16 @@
+../Core/Inc/aiTestUtility.h:152:20:_mon_alloc_reset	8	static
+../Core/Inc/aiTestUtility.h:321:22:cyclesCounterInit	40	static
+../Core/Inc/aiTestUtility.h:357:22:cyclesCounterStart	8	static
+../Core/Inc/aiTestUtility.h:374:26:cyclesCounterEnd	80	static
+../Core/Inc/aiTestUtility.h:439:26:disableInts	16	static,ignoring_inline_asm
+../Core/Src/aiSystemPerformance.c:142:12:aiBootstrap	24	static
+../Core/Src/aiSystemPerformance.c:188:12:aiInit	24	static
+../Core/Src/aiSystemPerformance.c:219:13:aiDeInit	16	static
+../Core/Src/aiSystemPerformance.c:258:15:user_observer_cb	96	static
+../Core/Src/aiSystemPerformance.c:282:6:aiObserverInit	88	static
+../Core/Src/aiSystemPerformance.c:321:6:aiObserverDone	208	static
+../Core/Src/aiSystemPerformance.c:401:12:aiTestPerformance	320	static,ignoring_inline_asm
+../Core/Src/aiSystemPerformance.c:596:12:aiTestConsole	16	static
+../Core/Src/aiSystemPerformance.c:630:5:aiSystemPerformanceInit	8	static
+../Core/Src/aiSystemPerformance.c:648:5:aiSystemPerformanceProcess	16	static
+../Core/Src/aiSystemPerformance.c:725:6:aiSystemPerformanceDeInit	8	static

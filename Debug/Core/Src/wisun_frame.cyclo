@@ -1,0 +1,3 @@
+../Core/Src/wisun_frame.c:3:16:xor_checksum	2
+../Core/Src/wisun_frame.c:9:6:wisun_send_frame	5
+../Core/Src/wisun_frame.c:37:6:wisun_parse_frame	16

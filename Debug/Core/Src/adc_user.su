@@ -1,0 +1,2 @@
+../Core/Inc/adc_user.h:8:24:now_us	4	static
+../Core/Src/adc_user.c:5:19:AD_DC_Injected_Once	24	static

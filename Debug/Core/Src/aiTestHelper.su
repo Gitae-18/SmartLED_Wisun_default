@@ -1,0 +1,6 @@
+../Core/Src/aiTestHelper.c:41:6:aiPlatformVersion	40	static
+../Core/Src/aiTestHelper.c:60:6:aiLogErr	16	static
+../Core/Src/aiTestHelper.c:70:20:aiPrintDataType	16	static
+../Core/Src/aiTestHelper.c:83:6:aiPrintBufferInfo	56	static
+../Core/Src/aiTestHelper.c:149:13:_aiPrintDataInfo	32	static
+../Core/Src/aiTestHelper.c:160:6:aiPrintNetworkInfo	40	static

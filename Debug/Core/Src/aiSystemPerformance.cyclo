@@ -1,0 +1,16 @@
+../Core/Inc/aiTestUtility.h:152:20:_mon_alloc_reset	1
+../Core/Inc/aiTestUtility.h:321:22:cyclesCounterInit	1
+../Core/Inc/aiTestUtility.h:357:22:cyclesCounterStart	1
+../Core/Inc/aiTestUtility.h:374:26:cyclesCounterEnd	2
+../Core/Inc/aiTestUtility.h:439:26:disableInts	1
+../Core/Src/aiSystemPerformance.c:142:12:aiBootstrap	5
+../Core/Src/aiSystemPerformance.c:188:12:aiInit	5
+../Core/Src/aiSystemPerformance.c:219:13:aiDeInit	4
+../Core/Src/aiSystemPerformance.c:258:15:user_observer_cb	2
+../Core/Src/aiSystemPerformance.c:282:6:aiObserverInit	6
+../Core/Src/aiSystemPerformance.c:321:6:aiObserverDone	7
+../Core/Src/aiSystemPerformance.c:401:12:aiTestPerformance	30
+../Core/Src/aiSystemPerformance.c:596:12:aiTestConsole	15
+../Core/Src/aiSystemPerformance.c:630:5:aiSystemPerformanceInit	1
+../Core/Src/aiSystemPerformance.c:648:5:aiSystemPerformanceProcess	13
+../Core/Src/aiSystemPerformance.c:725:6:aiSystemPerformanceDeInit	1
