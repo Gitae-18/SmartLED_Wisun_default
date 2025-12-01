@@ -7,14 +7,24 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart6;
 
 void dbg_dump_uart6(const uint8_t *p, uint16_t n) {
-    //HAL_UART_Transmit(&huart6, (uint8_t*)"[TX] ", 5, 50);
+    if (!p || !n) return;
+
+    const char *prefix = "[TX] ";
+    HAL_UART_Transmit(&huart6, (uint8_t*)prefix, strlen(prefix), HAL_MAX_DELAY);
+
+    char bytebuf[4];
+
     for (uint16_t i = 0; i < n; ++i) {
-        char s[4];
-        int m = snprintf(s, sizeof(s), "%02X", p[i]);
-        //HAL_UART_Transmit(&huart6, (uint8_t*)s, (uint16_t)m, 50);
-        //if (i + 1 < n) HAL_UART_Transmit(&huart6, (uint8_t*)" ", 1, 50);
+        int m = snprintf(bytebuf, sizeof(bytebuf), "%02X", p[i]);
+        HAL_UART_Transmit(&huart6, (uint8_t*)bytebuf, m, HAL_MAX_DELAY);
+        if (i + 1 < n) {
+            char sp = ' ';
+            HAL_UART_Transmit(&huart6, (uint8_t*)&sp, 1, HAL_MAX_DELAY);
+        }
     }
-    //HAL_UART_Transmit(&huart6, (uint8_t*)"\r\n", 2, 50);
+
+    const char *crlf = "\r\n";
+    HAL_UART_Transmit(&huart6, (uint8_t*)crlf, strlen(crlf), HAL_MAX_DELAY);
 }
 
 bool wisun_transport_send_blocking(const uint8_t *data, uint16_t len) {

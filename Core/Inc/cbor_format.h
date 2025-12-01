@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 #define CBOR_FFT_MAX  64   // 필요에 맞게 조정
+#define CBOR_UID_LEN 12
 
 typedef struct {
     float freq;
@@ -15,20 +16,46 @@ typedef struct {
 } cbor_fft_pair_t;
 
 typedef struct {
-    // optional fields (존재 안하면 has_* = false)
-    bool     has_id;
-    bool     has_time;
-    bool     has_volt;
-    bool     has_curr;
-    bool     has_fft;
-
-    uint16_t id;      // "id": u16
-    uint32_t time_us; // "t" : u32
-    float    volt;    // "v" : f32
-    float    curr;    // "i" : f32
-
+    // 기존 필드 (그대로)
+    bool     has_id, has_time, has_volt, has_curr, has_fft, has_temp;
+    uint16_t id;        // "id": u16  (레거시/옵션)
+    uint32_t time_us;   // "t" : u32  (레거시/옵션)
+    float    volt;      // "v" : f32
+    float    curr;      // "i" : f32
+    float    temp;     //"tp"
     cbor_fft_pair_t fft[CBOR_FFT_MAX];
-    uint16_t        fft_len;  // 실사용 길이
+    uint16_t        fft_len;
+
+    // 신규 메타
+    bool     has_k;     uint8_t  k;            // 0=req,1=resp,2=evt
+    bool     has_topic; char     topic[16];    // "t": string (topic)
+    bool     has_mid;   uint16_t mid;          // 대상/송신자 MID
+    bool     has_uid;   uint8_t  uid[CBOR_UID_LEN];
+    bool     has_n;     uint16_t n;            // nonce
+    bool     has_ok;    uint8_t  ok;           // 0/1
+
+    bool     p_has_on;      uint8_t  p_on;         // 스위치
+    bool     p_has_new_mid; uint16_t p_new_mid;    // assign_mid용
+    bool     p_has_uid;     uint8_t  p_uid[CBOR_UID_LEN]; // assign 대상 uid
+    bool     p_has_start_after_ms;  uint32_t p_start_after_ms;  // 시작 지연(ms)
+    bool     p_has_slot_len_ms;     uint32_t p_slot_len_ms;     // 슬롯 길이(ms)
+    bool     p_has_jitter_ms;       uint32_t p_jitter_ms;       // 지터(ms)
+    bool     p_has_max_mid;         uint16_t p_max_mid;
+    bool     p_has_period_ms;       uint32_t p_period_ms; // 주기
+    // (선택) p 안의 측정치도 허용: 디코더가 p.v/p.i/p.fft도 같게 채우도록
+    bool     p_has_volt, p_has_curr, p_has_fft;
+    bool     has_cmd;   uint16_t cmd;
+    bool     has_raw;   uint16_t raw;
+    // (옵션) 브로드캐스트/타깃도 쓰고 싶다면
+    bool     has_bc;    uint8_t  bc;
+    bool     has_target;uint16_t target;
+    bool     has_msg_id;
+	uint32_t msg_id;
+
+	// result ("success", "error" 등)
+	bool     has_result;
+	char     result[16];
+
 } cbor_packet_t;
 
 /* 인코딩 */

@@ -68,7 +68,6 @@ typedef struct {
     float    voltage;
     float    current;
     float    supersonic;
-    float    temp;
     uint32_t count;
 } snapshot_t;
 
@@ -90,73 +89,12 @@ typedef struct {
     enum { ORDER_MID_DESC=0 } order;
 } resp_slot_cfg_t;
 
-typedef struct {
-    uint8_t  in_use;               // 0 = 비어 있음, 1 = 사용 중
-
-    uint16_t tmid;                 // 이 프레임의 TMID (어디로 보낼지)
-    uint8_t  data[256];   // Wi-SUN DATA 부분만
-    uint16_t data_len;             // DATA 길이
-
-    uint32_t due_tick;             // 언제 보낼지 (ms)
-} hop_slot_t;
-
-typedef struct {
-    uint8_t  light_on_hour;
-    uint8_t  light_on_min;
-    uint8_t  light_off_hour;
-    uint8_t  light_off_min;
-
-    uint8_t  snap_enable;
-    uint8_t  snap_period_min;
-} node_cfg_t;
-
-typedef struct __attribute__((packed)) {
-    uint8_t  t;       // 0x10 = generic_ack
-    uint8_t  uid[12];
-
-    uint32_t msg_id;  // PC에서 보낸 msg_id 그대로 반사
-    uint8_t  ok;      // 1=success, 0=fail
-    int8_t   err_code;
-} AckBin_t;
-
-typedef struct __attribute__((packed)) {
-    uint8_t  t;      // 0x02 = get_status_resp
-    uint8_t  uid[12];
-
-    float    volt;
-    float    curr;
-    float    temp;
-
-    uint8_t  light_on;     // 0/1
-    // ---- 공통 응답 메타데이터 ----
-       uint32_t msg_id;   // 요청이 있을 때는 그 msg_id, 주기 스냅이면 0
-       uint8_t  ok;       // 1=success
-       int8_t   err_code; // 0=OK, 그 외 에러
-} StatusBin_t;
-
-typedef struct __attribute__((packed)) {
-    uint8_t  t;        // 0x11 = slot_resp (예: light_on 브로드캐스트 응답)
-    uint8_t  uid[12];  // 노드 UID
-
-    uint16_t mid;      // 내 MID (게이트웨이에서 누가 응답했는지 알 수 있게)
-    uint8_t  ok;       // 1=success, 0=fail
-
-    uint8_t  has_on;   // g_resp.p_on_valid
-    uint8_t  on;       // g_resp.p_on (0/1)
-
-    uint16_t nonce;    // g_resp.nonce (없으면 0 그대로)
-} SlotRespBin_t;
-
-static node_cfg_t g_cfg;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define RX_BUFFER_SIZE 100
 #define PACKET_MAX_SIZE 256
-#define HOP_QUEUE_SIZE   4   // 필요하면 4~8 정도로
-#define HOP_MAX_FRAME 256
 #define UID_ADDRESS  ((uint32_t*) 0x08FFF800)
 #define __DCACHE_PRESENT 1U
 #define __ICACHE_PRESENT 1U
@@ -173,7 +111,6 @@ static node_cfg_t g_cfg;
 #define CMD_GET_FFT 0x20
 #define CMD_GET_VOLD 0x21
 #define CMD_GET_STATUS 0x30
-#define CMD_SET_MID  0x01
 //#define FFT_TOTAL_SAMPLES  (CYCLE_SAMPS * N_CYCLES)
 
 
@@ -212,7 +149,7 @@ static node_cfg_t g_cfg;
 #endif
 
 #ifndef SNAP_FFT_PAIRS
-#define SNAP_FFT_PAIRS 2  // 기본 안전값
+#define SNAP_FFT_PAIRS 16  // 기본 안전값
 #endif
 
 #ifndef SUP_MIN_HZ
@@ -221,26 +158,6 @@ static node_cfg_t g_cfg;
 #ifndef SUP_MAX_HZ
 #define SUP_MAX_HZ 80000.0f   // 80 kHz
 #endif
-
-typedef struct __attribute__((packed)) {
-    uint8_t  t;         // 타입 예: 0x01 = snap
-    uint8_t  uid[12];
-
-    float    volt;
-    float    curr;
-    float    temp;
-
-    uint8_t  fft_count;
-    struct {
-        float freq;
-        float amp;
-    } fft[SNAP_FFT_PAIRS];
-
-    // ---- 공통 응답 메타데이터 ----
-       uint32_t msg_id;   // 요청이 있을 때는 그 msg_id, 주기 스냅이면 0
-       uint8_t  ok;       // 1=success
-       int8_t   err_code; // 0=OK, 그 외 에러
-} SnapBin_t;
 
 /* USER CODE END PD */
 
@@ -251,7 +168,6 @@ typedef struct __attribute__((packed)) {
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
-ADC_HandleTypeDef hadc2;
 
 RTC_HandleTypeDef hrtc;
 
@@ -272,18 +188,10 @@ static uint32_t g_snap_interval_ms = 60000;   // 기본 60초
 static uint32_t g_snap_next_tick   = 0;
 
 static char     g_uid_str[40];
-static uint32_t uid_ram_local[3];
+static uint32_t uid_ram_local[3]; // UID 복사본(스냅샷 payload 구성용)
 static volatile bool     wisun_packet_ready = false;
 static volatile uint16_t wisun_packet_len   = 0;
 static uint8_t           wisun_packet_shadow[PACKET_MAX_SIZE];
-
-static bool on_done_today  = false;
-static bool off_done_today = false;
-
-static hop_slot_t g_hop_q[HOP_QUEUE_SIZE];
-
-// 날짜 바뀔 때 플래그 리셋용
-static uint8_t sched_last_day = 0xFF;
 
 static const float K_ADC2V   = VREF_FIXED / ADC_MAX_COUNTS;                 // raw → V
 //static const float K_VIN     = K_ADC2V * V_DIV_GAIN;                        // raw → Vin(V)
@@ -304,10 +212,6 @@ volatile uint8_t receive_flag = 0;
 volatile uint32_t tick_start = 0, tick_end = 0;
 volatile uint32_t uid_ram[3];
 volatile uint16_t g_last_rx_tmid = 0;
-static uint32_t g_last_msg_id      = 0;
-static int      g_last_cmd         = -1;
-static uint8_t  g_last_has_msg_id  = 0;
-static uint8_t  g_last_has_cmd     = 0;
 
 bool fft_data_sent = false;
 
@@ -334,7 +238,8 @@ uint32_t final_response[100];
 
 uint16_t vrefint_adc;
 uint16_t adc_dma_buffer[FFT_SIZE];
-uint16_t my_mid = 0x0000;
+uint16_t my_module_id = 0x0000;
+uint16_t my_mid = MID_INVALID;
 uint16_t target_mid = 0;
 uint16_t adc_raw_volt = 0;
 uint16_t adc_raw_curr = 0;
@@ -351,7 +256,8 @@ float32_t I_OFFSET_VOLT = 0.0f;
 uint32_t last_tick = 0;
 
 char debug_msg[64];
-char wisun_mid[10] = {0};
+char uid_str[50];
+char wisun_mid[10] = {0};  // MID ???   버퍼
 char wisun_mac[20] = {0};
 
 volatile uint8_t sendIDFlag = 0;
@@ -365,7 +271,6 @@ volatile uint8_t started = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void PeriphCommonClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -373,7 +278,6 @@ static void MX_ADC1_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_RTC_Init(void);
-static void MX_ADC2_Init(void);
 /* USER CODE BEGIN PFP */
 void Send_UID_UART2(void);
 void Format_UID(char *msg, size_t size);
@@ -401,37 +305,40 @@ void Parse_AT_Response(const char* buffer);
 void PrintReceivedPacket(const char* prefix, const uint8_t* data, uint16_t length);
 //void SendReceivedBroadcastPacket(void);
 //void Process_WiSun_Command(wisun_rx_buffer, wisun_rx_index);
+/*typedef void (*CmdHandler)(uint8_t *data, uint8_t len);
+void Handle_LightOn(uint8_t *data, uint8_t len);
+void Handle_LightOff(uint8_t *data, uint8_t len);
+void Handle_GetFFT(uint8_t *data, uint8_t len);
+void Handle_GetVoltage(uint8_t *data, uint8_t len);
+void Handle_GetStatus(uint8_t *data, uint8_t len);*/
 void StreetLight_ToggleTask(void);
 //void loop_fft_for_duration(uint32_t duration_ms);
 void ADC1_Start_Regular_IN18_IT(void);
 void Ultra_ResumeNextFrame(void);
 void Ultra_StartSampling(void);
 void Print_FFT_Summary(uint16_t *raw_buf);
-
 static inline float adc_to_vsense(uint16_t raw);
 static inline float vsense_to_vin(float v_sense);
 static inline float vsense_to_current(float v_sense, float offset_v);
 static inline void PA12_toggle_soft(void);
+void send_one_measurement(void);
 static void init_uid_string(void);
 static void Read_UID_local(void);
 static inline uint16_t xorshift16(uint16_t x);
-
+static void schedule_ordered_response(uint16_t nonce,
+                                      const char* topic,
+                                      uint8_t ok,
+                                      const resp_slot_cfg_t* cfg);
+static bool find_cbor_map_slice(const uint8_t* data, size_t data_len,
+                                const uint8_t** cbor, size_t* cbor_len);
 static void send_resp_now_from_task(void);
 void tx_task_poll(void);
 static void build_snapshot_packet(cbor_packet_t* rp, const snapshot_t* s,
                                   bool as_resp, const char* topic, uint16_t nonce);
 static bool send_wisun_resp(uint16_t tmid, const uint8_t *cbor, size_t cbor_len);
-static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len);
 static void mid_pack_uid12(uint8_t out12[12]);
 void Send_Monitoring_Snapshot_JSON(void);
-static void push_snapshot(bool light_on, float voltage, float current, float temp, float supersonic);
-static void scheduler_poll(void);
-void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n);
-void wisun_toss_packet(uint16_t tmid, const uint8_t *rx, uint16_t rx_len);
-static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, const uint8_t *data, uint16_t len);
-void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid);
-static void apply_mid(uint16_t new_mid);
-static void hop_tx_task_poll(void);
+//static void Poll_Temperature_And_Print(void);
 //void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 /* USER CODE END PFP */
 
@@ -440,7 +347,7 @@ static void hop_tx_task_poll(void);
 
 int __io_putchar(int ch)
 {
-    HAL_UART_Transmit(&huart6, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
     return ch;
 }
 
@@ -590,43 +497,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		                PrintReceivedPacket("Receive Packet : ", tx_forward_buffer, packet_len);
 
 		                // MID 추출 및 중계 여부 판단
-		                uint16_t target_mid = (uint16_t)tx_forward_buffer[6] | ((uint16_t)tx_forward_buffer[7] << 8);
-		                dbg_print_mid_info("[MID_CHECK]", my_mid, target_mid);
-
-		                if (target_mid == my_mid) {
-		                    dbg_dump_uart6_with_tag("[TX_TOSS_BR]", tx_forward_buffer, packet_len);
-		                    //HAL_UART_Transmit(&huart1, tx_forward_buffer, packet_len, HAL_MAX_DELAY);
-		                }
-		                else {
-		                    dbg_dump_uart6_with_tag(
-		                        (target_mid == 0x0000) ? "[HOP_BR_ENQ]" : "[HOP_UNI_ENQ]",
-		                        tx_forward_buffer, packet_len);
-
-		                    uint32_t now        = HAL_GetTick();
-		                    uint32_t base_delay = 10;
-		                    uint32_t jitter     = 0;
-
-		                    wisun_frame_view_t v;
-		                        if (!wisun_parse_frame(tx_forward_buffer, packet_len, &v)) {
-		                            // 프레임 이상하면 홉 안 함
-		                        } else {
-		                            for (int qi = 0; qi < HOP_QUEUE_SIZE; ++qi) {
-		                                if (!g_hop_q[qi].in_use) {
-		                                    if (v.data_len > HOP_MAX_FRAME) {
-		                                        // 너무 크면 그냥 버림
-		                                        break;
-		                                    }
-
-		                                    g_hop_q[qi].tmid     = v.tmid;
-		                                    g_hop_q[qi].data_len = v.data_len;
-		                                    memcpy(g_hop_q[qi].data, v.data, v.data_len);
-
-		                                    g_hop_q[qi].due_tick = now + base_delay + jitter;
-		                                    g_hop_q[qi].in_use   = 1;
-		                                    break;
-		                                }
-		                            }
-		                        }
+		                uint16_t target_mid = (uint16_t)tx_forward_buffer[4] | ((uint16_t)tx_forward_buffer[5] << 8);
+		                if (target_mid != my_mid && target_mid != 0x0000) {
+		                    HAL_UART_Transmit(&huart1, tx_forward_buffer, packet_len, HAL_MAX_DELAY);
 		                }
 
 		                // (PACKET_MAX_SIZE는 RX_BUFFER_SIZE 이상으로 정의되어 있어야 안전)
@@ -657,106 +530,21 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 
 
-static void hop_tx_task_poll(void)
+// DATA 안에서 CBOR map 시작(A0..BF)을 찾아 슬라이스 반환
+static bool find_cbor_map_slice(const uint8_t* data, size_t data_len,
+                                const uint8_t** cbor, size_t* cbor_len)
 {
-    uint32_t now = HAL_GetTick();
-
-    for (int i = 0; i < HOP_QUEUE_SIZE; ++i) {
-        if (!g_hop_q[i].in_use) continue;
-        if ((int32_t)(now - g_hop_q[i].due_tick) < 0) continue;
-
-        // ----- TTL 처리 -----
-        if (g_hop_q[i].data_len < 1) {
-            g_hop_q[i].in_use = 0;
-            continue;
+    if (!data || !cbor || !cbor_len) return false;
+    for (size_t i = 0; i < data_len; ++i) {
+        if ((data[i] & 0xE0) == 0xA0) { // major type 5 = map
+            *cbor     = &data[i];
+            *cbor_len = data_len - i;
+            return true;
         }
-
-        uint8_t ttl = g_hop_q[i].data[0];
-        if (ttl == 0) {
-            dbg_dump_uart6_with_tag("[HOP_DROP_TTL0]", g_hop_q[i].data, g_hop_q[i].data_len);
-            g_hop_q[i].in_use = 0;
-            continue;
-        }
-        g_hop_q[i].data[0] = ttl - 1;
-
-        // ----- 실제 전송: wisun_send_frame로 새 프레임 구성 -----
-        wisun_frame_cfg_t cfg = {
-            .sig1 = 0xAA,
-            .sig2 = 0xAB,
-            .tmid = g_hop_q[i].tmid,
-        };
-
-        dbg_dump_uart6_with_tag("[HOP_TX]", g_hop_q[i].data, g_hop_q[i].data_len);
-        (void)wisun_send_frame(&cfg,
-                               g_hop_q[i].data,
-                               g_hop_q[i].data_len,
-                               wisun_tx_adapter,
-                               NULL);
-
-        g_hop_q[i].in_use = 0;
     }
+    return false;
 }
 
-
-static void handle_binary_cmd(uint8_t cmd,
-                              uint8_t flags,
-                              uint16_t msg_id,
-                              uint16_t tmid,
-                              const uint8_t *data,
-                              uint16_t len)
-{
-    uint8_t uid12[12];
-    mid_pack_uid12(uid12);
-
-    switch (cmd)
-    {
-        case 0x13:   // SNAP 요청 (get_status)
-        {
-            ultra_sampling_paused = true;
-            ultra_frame_ready = true;
-
-            // 요청 SNAP 1회 측정 → SnapBin 응답
-            Send_Monitoring_Snapshot_JSON();  // 이미 바이너리로 전송하도록 되어 있음
-            break;
-        }
-
-        case 0x10:  // LIGHT ON
-        {
-            uint8_t on = flags & 0x01;
-            HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin,
-                              on ? GPIO_PIN_SET : GPIO_PIN_RESET);
-
-            // ACK 보내기
-            AckBin_t ack = {0};
-            ack.t = 0x10;
-            memcpy(ack.uid, uid12, 12);
-            ack.msg_id = msg_id;
-            ack.ok = 1;
-            ack.err_code = 0;
-
-            send_wisun_binary(tmid, (uint8_t*)&ack, sizeof(ack));
-            break;
-        }
-
-        case 0x11: // LIGHT OFF (옵션)
-        {
-            HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin, GPIO_PIN_RESET);
-            // ACK 구성 같은 형태
-            break;
-        }
-
-        case CMD_SET_MID: {
-            if (len < 2) break;
-            uint16_t new_mid = ((uint16_t)data[0] << 8) | data[1];
-
-            apply_mid(new_mid);   // 여기서 AT+MID=, my_mid, flash 저장 등 처리
-            break;
-        }
-        // 다른 CMD 는 나중에 추가
-        default:
-            break;
-    }
-}
 
 void ADC1_Start_Regular_IN18_IT(void)
 {
@@ -815,92 +603,55 @@ static bool send_wisun_resp(uint16_t tmid, const uint8_t *cbor, size_t cbor_len)
     return wisun_send_frame(&cfg, cbor, cbor_len, wisun_tx_adapter, NULL);
 }
 
-static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len)
+static void schedule_ordered_response(uint16_t nonce,
+                                      const char* topic,
+                                      uint8_t ok,
+                                      const resp_slot_cfg_t* cfg)
 {
-    wisun_frame_cfg_t cfg = {
-        .sig1 = 0xAA,   // 그대로 유지
-        .sig2 = 0xAB,   // 그대로 유지
-        .tmid = tmid
-    };
-    // data 안에 0x00 이 있어도 상관 없음. len 기준으로 전송됨.
-    return wisun_send_frame(&cfg, data, len, wisun_tx_adapter, NULL);
-}
+    if (!cfg || !cfg->slot_len_ms) return;
+    uint32_t now = HAL_GetTick();
+    uint32_t base = cfg->start_after_ms;
 
-void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n)
-{
-    if (!p || !n) return;
-
-    // 태그 먼저 출력
-    if (tag) {
-        HAL_UART_Transmit(&huart6, (uint8_t*)tag, (uint16_t)strlen(tag), HAL_MAX_DELAY);
-        HAL_UART_Transmit(&huart6, (uint8_t*)" ", 1, HAL_MAX_DELAY);
+    uint16_t M = (cfg->max_mid ? cfg->max_mid : 1);
+    uint32_t idx = 0;
+    if (cfg->order == ORDER_MID_DESC) {
+        if (my_mid > 0 && my_mid <= M) idx = (uint32_t)(M - my_mid);
+        else                           idx = 0;
     }
 
-    // 바이트들을 HEX로 출력
-    for (uint16_t i = 0; i < n; ++i) {
-        char s[4];
-        int m = snprintf(s, sizeof(s), "%02X", p[i]);
-        HAL_UART_Transmit(&huart6, (uint8_t*)s, (uint16_t)m, HAL_MAX_DELAY);
-        if (i + 1 < n)
-            HAL_UART_Transmit(&huart6, (uint8_t*)" ", 1, HAL_MAX_DELAY);
-    }
-    HAL_UART_Transmit(&huart6, (uint8_t*)"\r\n", 2, HAL_MAX_DELAY);
-}
+    uint16_t seed = (uint16_t)(uid_ram[0] ^ uid_ram[1] ^ uid_ram[2] ^ nonce);
+    uint32_t jitter = cfg->jitter_ms ? (xorshift16(seed) % cfg->jitter_ms) : 0;
 
-void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid)
-{
-    char buf[64];
-    int len;
-
-    if (tag) {
-        len = snprintf(buf, sizeof(buf),
-                       "%s my_mid=0x%04X target_mid=0x%04X\r\n",
-                       tag, my_mid, target_mid);
-    } else {
-        len = snprintf(buf, sizeof(buf),
-                       "my_mid=0x%04X target_mid=0x%04X\r\n",
-                       my_mid, target_mid);
-    }
-
-    if (len > 0) {
-        if (len > (int)sizeof(buf)) len = sizeof(buf);
-        HAL_UART_Transmit(&huart6, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY);
-    }
+    __disable_irq();
+    g_resp.pending  = true;
+    g_resp.nonce    = nonce;
+    g_resp.ok       = ok;
+    memset((void*)g_resp.topic, 0, sizeof(g_resp.topic));
+    strncpy((char*)g_resp.topic, topic, sizeof(g_resp.topic)-1);
+    g_resp.due_tick = now + base + idx * cfg->slot_len_ms + jitter;
+    __enable_irq();
 }
 
 static void send_resp_now_from_task(void)
 {
-    uint8_t uid12[12];
-    mid_pack_uid12(uid12);
+    uint8_t uid12[12]; mid_pack_uid12(uid12);
 
-    SlotRespBin_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
+    cbor_packet_t rp={0};
+    rp.has_k=true; rp.k=1;
+    rp.has_topic=true; strncpy(rp.topic,(const char*)g_resp.topic,sizeof(rp.topic)-1);
+    rp.has_uid=true; memcpy(rp.uid, uid12, 12);
+    rp.has_mid=true; rp.mid=my_mid;
+    if (g_resp.nonce){ rp.has_n=true; rp.n=g_resp.nonce; }
+    rp.has_ok=true; rp.ok=g_resp.ok;
 
-    pkt.t = 0x11;                 // slot_resp 타입 (게이트웨이랑 약속)
-    memcpy(pkt.uid, uid12, 12);
+    if (g_resp.p_on_valid) { rp.p_has_on = true; rp.p_on = g_resp.p_on; }
 
-    pkt.mid   = my_mid;
-    pkt.ok    = g_resp.ok ? 1 : 0;
-    pkt.has_on = g_resp.p_on_valid;
-    pkt.on     = g_resp.p_on ? 1 : 0;
-    pkt.nonce  = g_resp.nonce;    // 0이면 “없음” 취급
-
-    // TMID는 브로드캐스트용으로 0x0000 유지
-    wisun_frame_cfg_t cfg = {
-        .sig1 = 0xAA,
-        .sig2 = 0xAB,
-        .tmid = 0x0000
-    };
-
-    (void)wisun_send_frame(&cfg, (const uint8_t*)&pkt, sizeof(pkt),
-                           wisun_tx_adapter, NULL);
-
-    __disable_irq();
-    memset((void*)&g_resp, 0, sizeof(g_resp));
-    __enable_irq();
+    uint8_t ob[256]; size_t on=0;
+    if (cbor_encode_packet(ob,sizeof(ob),&rp,&on)) {
+        wisun_frame_cfg_t cfg = { .sig1=0xAA,.sig2=0xAA,.tmid=0x0000 };
+        (void)wisun_send_frame(&cfg, ob, on, wisun_tx_adapter, NULL);
+    }
 }
-
-
 
 void tx_task_poll(void)
 {
@@ -930,7 +681,58 @@ void Print_FFT_Summary(uint16_t *raw_buf)
 }
 
 
+/* void Process_Ultra_Frame_Then_VI(void)
+{
+    if (!ultra_frame_ready || !ultra_sampling_paused) return;
+    static uint16_t local_raw[FFT_SIZE];
+    static float    local_in [FFT_SIZE];
+    __disable_irq();
+    ultra_frame_ready = false;
+    for (int i=0; i<FFT_SIZE; ++i) { local_raw[i] = raw_buffer[i]; local_in[i] = inputSignal[i]; }
+    __enable_irq();
 
+    VIRead vi;
+    if (AD_DC_Injected_Once(&vi) == HAL_OK) {
+        // --- 변환: 가장 단순 버전 ---
+        float vin_v     = (float)vi.volt_raw * (3.3f / 4095.0f);
+        float i_adc = (float)vi.curr_raw * K_ADC2V;
+
+        // 간단 출력 (짧은 포맷)
+        char m[96];
+        int n = snprintf(m, sizeof(m),
+                         "VI: %u,%u => %.3f V, %.3f A @ %luus\r\n",
+                         vi.volt_raw, vi.curr_raw, vin_v, i_adc, vi.t_us);
+        HAL_UART_Transmit(&huart6, (uint8_t*)m, n, 20);
+    } else {
+        char m[] = "VI read failed\r\n";
+        HAL_UART_Transmit(&huart6, (uint8_t*)m, sizeof(m)-1, 10);
+    }
+
+    ExtractFullFFT(fft_packet);
+    Print_FFT_Summary(local_raw);
+    Ultra_ResumeNextFrame();
+} */
+
+void send_one_measurement(void) {
+    uint8_t  cbor[128];
+    size_t   n = 0;
+
+    // 1) CBOR 인코딩
+    if (!cbor_encode_measurement(cbor, sizeof(cbor),
+                                 /*sensor_id*/18, /*t_us*/12345678u,
+                                 /*value*/3.14f, /*ok*/true, &n)) {
+        // 에러 처리
+        return;
+    }
+
+    // 2) Wi-SUN 프레임 구성
+    wisun_frame_cfg_t cfg = { .sig1 = 0xAA, .sig2 = 0xAB, .tmid = 0x0000 /*브로드캐스트*/ };
+
+    // 3) 전송
+    (void)wisun_send_frame(&cfg, cbor, n,
+                           /*tx*/ (wisun_tx_fn)wisun_transport_send_blocking,
+                           /*user*/ NULL);
+}
 
 static float compute_supersonic_rms_from_fftdata(const FftData_t* arr, uint16_t n)
 {
@@ -980,38 +782,31 @@ static void build_snapshot_packet(cbor_packet_t* rp, const snapshot_t* s,
     // rp->has_time = true; rp->time_us = s->tick_ms;  // (legacy 't' 사용 시 주의: topic과 충돌 안 나게)
 }
 
+// ===== 필요한 외부 심볼들(프로젝트에 이미 있을 것으로 가정) =====
+
+// ===== 구현 =====
 void Send_Monitoring_Snapshot_JSON(void)
 {
-    // 1) 프레임 준비 안 됐으면 리턴
-    if (!ultra_frame_ready || !ultra_sampling_paused)
-        return;
+    if (!ultra_frame_ready || !ultra_sampling_paused) return;
 
-    // 2) UID 가져오기
-    uint8_t uid12[12];
-    mid_pack_uid12(uid12);
-
-    // 3) 로컬 버퍼에 복사 (원래 있던 구조 그대로 유지)
     static uint16_t local_raw[FFT_SIZE];
     static float    local_in [FFT_SIZE];
 
     __disable_irq();
     ultra_frame_ready = false;
-    for (int i = 0; i < FFT_SIZE; ++i) {
+    for (int i=0; i<FFT_SIZE; ++i) {
         local_raw[i] = raw_buffer[i];
         local_in[i]  = inputSignal[i];
     }
     __enable_irq();
 
-    // 4) VI 측정
-    VIRead vi;
-    float vin_v  = 0.0f;
-    float i_adc_v = 0.0f;
+    // VI 측정
+    VIRead vi; float vin_v = 0.0f, i_adc_v = 0.0f;
     if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-        vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-        i_adc_v = (float)vi.curr_raw * K_ADC2V;
+        vin_v  = (float)vi.volt_raw * (3.3f / 4095.0f);
+        i_adc_v= (float)vi.curr_raw * K_ADC2V;
     }
 
-    // 5) 온도 측정
     uint16_t temp_raw = 0;
     float temp_v = 0.0f;
     if (HAL_ADC_Start(&hadc2) == HAL_OK) {
@@ -1022,198 +817,210 @@ void Send_Monitoring_Snapshot_JSON(void)
         HAL_ADC_Stop(&hadc2);
     }
 
-    // 6) FFT 계산 + supersonic 메트릭
+    // FFT 계산 및 supersonic 메트릭
     ExtractFullFFT(fft_packet);
-
     float supersonic_val = compute_supersonic_rms_from_fftdata(
-        fft_packet, FFT_SIZE / 2
+        fft_packet, FFT_SIZE/2
     );
 
-    // SnapBin에 넣을 요약 FFT (기존 JSON 코드 참고)
-    float    fft_freq[SNAP_FFT_PAIRS] = {0};
-    float    fft_amp [SNAP_FFT_PAIRS] = {0};
-    uint8_t  fft_cnt = 0;
-
-    uint16_t nbins = FFT_SIZE / 2;
-    for (uint16_t b = 1; b < nbins && fft_cnt < SNAP_FFT_PAIRS; ++b) {
-        float freq = (float)b * (float)SAMPLING_RATE / (float)FFT_SIZE;
-        fft_freq[fft_cnt] = freq;
-        fft_amp [fft_cnt] = fft_packet[b].amplitude;
-        fft_cnt++;
-    }
-
-    // 7) 스냅샷 히스토리 저장 (그래프/로그용)
-    bool light_on = (HAL_GPIO_ReadPin(LIGHT_GPIO_Port, LIGHT_Pin) == GPIO_PIN_SET);
-    push_snapshot(light_on, vin_v, i_adc_v, temp_v, supersonic_val);
-
-    // 8) 다음 프레임 준비 + 카운트 증가
+    // 다음 프레임 준비 + 카운트 증가
     Ultra_ResumeNextFrame();
     g_monitor_count++;
 
-    // 9) SnapBin_t 바이너리 패킷 구성
-    SnapBin_t snap;
-    memset(&snap, 0, sizeof(snap));
+    uint8_t  out[240];
+        size_t   olen = 0;
+        cbor_packet_t rp = (cbor_packet_t){0};
 
-    snap.t = 0x01;                // snap 타입(게이트웨이와 약속)
-    memcpy(snap.uid, uid12, 12);
+        rp.has_k     = 1; rp.k = 1;                // resp
+        rp.has_ok    = 1; rp.ok = 1;
+        rp.has_topic = 1; strcpy(rp.topic, "snap");// t: "snap"
+        rp.has_temp = 1;
+        rp.temp     = temp_v;
+        // (선택) MID/UID/nonce 반사
+        // rp.has_mid=1; rp.mid=my_mid;
+        // if (cp->has_n){ rp.has_n=1; rp.n=cp->n; }
 
-    snap.volt = vin_v;
-    snap.curr = i_adc_v;
-    snap.temp = temp_v;
+        // 전압/전류(부동소수)
+        rp.has_volt = 1; rp.volt = vin_v;          // V
+        rp.has_curr = 1; rp.curr = i_adc_v;        // A(또는 ADC-V)
 
-    snap.fft_count = fft_cnt;
-    for (uint8_t k = 0; k < fft_cnt && k < SNAP_FFT_PAIRS; ++k) {
-        snap.fft[k].freq = fft_freq[k];
-        snap.fft[k].amp  = fft_amp[k];
-    }
+        // FFT: (freq, amp) 쌍 up to 23개
+        rp.has_fft  = 1;
+        rp.fft_len  = 0;
+        uint16_t nbins = FFT_SIZE/2;
+        for (uint16_t b = 1; b < nbins && rp.fft_len < SNAP_FFT_PAIRS; ++b) {
+            float freq = (float)b * (float)SAMPLING_RATE / (float)FFT_SIZE;
+            rp.fft[rp.fft_len].freq = freq;
+            rp.fft[rp.fft_len].amp  = fft_packet[b].amplitude;
+            rp.fft_len++;
+            // 간단히 앞쪽 몇 개를 싣는 방식. 원하면 피크 추출/등간 샘플링으로 바꿔도 됨.
+        }
 
-    // 10) Wi-SUN 프레임으로 그대로 전송 (DATA = SnapBin_t 바이너리)
-    // tmid는 스냅 응답이니까 0x0000으로 고정, 필요하면 g_last_rx_tmid 써도 됨.
-    (void)send_wisun_binary(0x0000, (uint8_t*)&snap, sizeof(SnapBin_t));
-
-    // 11) snap은 요청 응답이 아니라 주기적 모니터링이므로
-    //     msg_id / cmd echo는 굳이 안 해도 됨. 필요하면 여기서 플래그 리셋:
-    g_last_has_msg_id = 0;
-    g_last_has_cmd    = 0;
+        if (cbor_encode_packet(out, sizeof(out), &rp, &olen) && olen <= 253) {
+            send_wisun_resp(g_last_rx_tmid, out, olen);
+        } else {
+            // 너무 커졌거나 실패하면 축소해서 재시도(예: FFT 개수 더 줄이기)
+            // 또는 간단 ACK만:
+            cbor_packet_t ack = (cbor_packet_t){0};
+            ack.has_k=1; ack.k=1; ack.has_ok=1; ack.ok=0; ack.has_topic=1; strcpy(ack.topic,"snap");
+            if (cbor_encode_packet(out, sizeof(out), &ack, &olen)) {
+                send_wisun_resp(g_last_rx_tmid, out, olen);
+            }
+        }
 }
 
-
-/*static void handle_req(const cbor_packet_t* cp)
+// Wi-SUN으로 한 번에 송신
+static void send_cbor_now(const cbor_packet_t* rp)
 {
-    // --- 대상 MID 체크 ---
+    uint8_t out[256]; size_t n=0;
+    if (!cbor_encode_packet(out, sizeof(out), rp, &n)) return;
+
+    wisun_frame_cfg_t cfg = { .sig1=0xAA, .sig2=0xAA, .tmid=0x0000 };
+    (void)wisun_send_frame(&cfg, out, n, wisun_tx_adapter, NULL);
+}
+
+static bool get_latest_snapshot(snapshot_t* out)
+{
+    if (!g_snap_inited) return false;
+    uint8_t last = (g_snap_head + SNAP_RING_SIZE - 1) % SNAP_RING_SIZE;
+    *out = g_snap[last];
+    return true;
+}
+
+static void handle_req(const cbor_packet_t* cp)
+{
+    // 1) 타겟 판정: mid 없거나 0이거나 내 MID면 실행
     bool target = (!cp->has_mid) || (cp->mid == 0) || (cp->mid == my_mid);
     if (!target) return;
 
-    uint8_t uid12[12];
-    mid_pack_uid12(uid12);
-
-    // =========================================================
-    // LIGHT ON
-    // =========================================================
+    // === light_on ===
     if (cp->has_topic && strcmp(cp->topic, "light_on") == 0) {
-            if (cp->p_has_on) {
-                HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin,
-                                  cp->p_on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        if (cp->p_has_on) {
+            HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin,
+                              cp->p_on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-                // 기존 delay-slot 스케줄 그대로 유지
-                resp_slot_cfg_t scfg = {
-                    .start_after_ms = (cp->p_has_start_after_ms ? cp->p_start_after_ms : 1000),
-                    .slot_len_ms    = (cp->p_has_slot_len_ms    ? cp->p_slot_len_ms    : 1500),
-                    .jitter_ms      = (cp->p_has_jitter_ms      ? cp->p_jitter_ms      : 200),
-                    .max_mid        = (cp->p_has_max_mid        ? cp->p_max_mid        : 30),
-                    .order          = ORDER_MID_DESC,
-                };
+            // (옵션) 슬롯 지연 응답 파라미터 — 실제로 필드가 온다면만 사용
+            /*
+            resp_slot_cfg_t scfg = {
+                .start_after_ms = (cp->p_has_start_after_ms ? cp->p_start_after_ms : 1000),
+                .slot_len_ms    = (cp->p_has_slot_len_ms    ? cp->p_slot_len_ms    : 1500),
+                .jitter_ms      = (cp->p_has_jitter_ms      ? cp->p_jitter_ms      : 200),
+                .max_mid        = (cp->p_has_max_mid        ? cp->p_max_mid        : 30),
+                .order          = ORDER_MID_DESC,
+            };
+            __disable_irq();
+            g_resp.p_on_valid = 1;
+            g_resp.p_on       = cp->p_on;
+            __enable_irq();
 
-                __disable_irq();
-                g_resp.p_on_valid = 1;
-                g_resp.p_on       = cp->p_on;
-                __enable_irq();
+            schedule_ordered_response(cp->has_n ? cp->n : 0, "light_on", 1, &scfg);
+            */
 
-                schedule_ordered_response(cp->has_n ? cp->n : 0, "light_on", 1, &scfg);
-
-                // ★ 즉시 ACK를 AckBin_t 바이너리로 전송
-                AckBin_t ack = {0};
-                ack.t = 0x10;  // generic_ack
-                memcpy(ack.uid, uid12, 12);
-                ack.msg_id   = cp->has_msg_id ? cp->msg_id : 0;
-                ack.ok       = 1;
-                ack.err_code = 0;
-
-                send_wisun_binary(g_last_rx_tmid, (uint8_t*)&ack, sizeof(ack));
+            // 즉시 ACK 응답 (간단)
+            uint8_t ob[128]; size_t on = 0;
+            cbor_packet_t rp = (cbor_packet_t){0};
+            rp.has_k = 1;  rp.k = 1;             // resp
+            rp.has_ok = 1; rp.ok = 1;
+            rp.has_topic = 1; strcpy(rp.topic, "light_on");
+            if (cp->has_n) { rp.has_n = 1; rp.n = cp->n; }
+            if (cbor_encode_packet(ob, sizeof(ob), &rp, &on)) {
+                extern volatile uint16_t g_last_rx_tmid;
+                (void)send_wisun_resp(g_last_rx_tmid, ob, on);
             }
-            return;
-	}
+        }
+    }
 
-    // =========================================================
-    // ASSIGN MID
-    // =========================================================
+    // === assign_mid ===
     else if (cp->has_topic && strcmp(cp->topic, "assign_mid") == 0) {
+        uint8_t uid12[12]; mid_pack_uid12(uid12);
 
-            if (cp->p_has_uid && memcmp(cp->p_uid, uid12, 12) == 0 &&
-                cp->p_has_new_mid) {
-
-                uint16_t new_mid = cp->p_new_mid;
-                if (new_mid != 0 && new_mid != MID_INVALID) {
-                    my_mid = new_mid;
-                    save_mid_to_flash(my_mid);
-                }
-
-                AckBin_t ack = {0};
-                ack.t = 0x10;  // generic_ack
-                memcpy(ack.uid, uid12, 12);
-                ack.msg_id   = cp->has_msg_id ? cp->msg_id : 0;
-                ack.ok       = 1;
-                ack.err_code = 0;
-
-                send_wisun_binary(g_last_rx_tmid, (uint8_t*)&ack, sizeof(ack));
+        if (cp->p_has_uid && memcmp(cp->p_uid, uid12, 12) == 0 && cp->p_has_new_mid) {
+            uint16_t new_mid = cp->p_new_mid;
+            if (new_mid != 0 && new_mid != MID_INVALID) {
+                my_mid = new_mid;
+                // save_mid_to_flash(my_mid); // ← 플래시 미사용이면 제거/주석
             }
-            return;
-	}
 
-    // =========================================================
-    // STATE REQUEST
-    // =========================================================
+            // ACK 응답
+            uint8_t ob[128]; size_t on = 0;
+            cbor_packet_t rp = (cbor_packet_t){0};
+            rp.has_k = 1; rp.k = 1;
+            rp.has_topic = 1; strcpy(rp.topic, "assign_mid");
+            rp.has_mid = 1; rp.mid = my_mid;
+            rp.has_uid = 1; memcpy(rp.uid, uid12, 12);
+            if (cp->has_n) { rp.has_n = 1; rp.n = cp->n; }
+            rp.has_ok = 1; rp.ok = 1;
+
+            if (cbor_encode_packet(ob, sizeof(ob), &rp, &on)) {
+                extern volatile uint16_t g_last_rx_tmid;
+                (void)send_wisun_resp(g_last_rx_tmid, ob, on);
+            }
+        }
+    }
+
+    // === state_req ===
     else if (cp->has_topic && strcmp(cp->topic, "state_req") == 0) {
+        uint8_t uid12[12]; mid_pack_uid12(uid12);
 
-            AckBin_t ack = {0};
-            ack.t = 0x10;  // generic_ack
-            memcpy(ack.uid, uid12, 12);
-            ack.msg_id   = cp->has_msg_id ? cp->msg_id : 0;
-            ack.ok       = 1;
-            ack.err_code = 0;
+        cbor_packet_t rp = (cbor_packet_t){0};
+        rp.has_k = 1; rp.k = 1;
+        rp.has_topic = 1; strcpy(rp.topic, "state");
+        rp.has_uid = 1; memcpy(rp.uid, uid12, 12);
+        rp.has_mid = 1; rp.mid = my_mid;
+        if (cp->has_n) { rp.has_n = 1; rp.n = cp->n; }
+        rp.has_ok = 1; rp.ok = 1;
+        // TODO: 필요 시 측정치/상태 추가
 
-            send_wisun_binary(g_last_rx_tmid, (uint8_t*)&ack, sizeof(ack));
-            return;
-	}
-
-    // =========================================================
-    // SNAP 1회 요청 (cmd 0x13)
-    // =========================================================
-    else if (cp->has_topic &&
-             (strcmp(cp->topic, "cmd") == 0 ||
-              strcmp(cp->topic, "snap") == 0)) {
+        uint8_t ob[128]; size_t on = 0;
+        if (cbor_encode_packet(ob, sizeof(ob), &rp, &on)) {
+            extern volatile uint16_t g_last_rx_tmid;
+            (void)send_wisun_resp(g_last_rx_tmid, ob, on);
+        }
+    }
+    else if (cp->has_topic && strcmp(cp->topic, "cmd") == 0) {
+        bool target = (!cp->has_mid) || (cp->mid==0) || (cp->mid==my_mid);
+        if (!target) return;
 
         int cmdv = -1;
-        if (cp->has_raw)      cmdv = cp->raw;
-        else if (cp->has_cmd) cmdv = cp->cmd;
+        if (cp->has_raw)      cmdv = (int)cp->raw;  // 게이트웨이가 3→0x13 보낼 수 있음
+        else if (cp->has_cmd) cmdv = (int)cp->cmd;
 
-        if (cmdv == 0x13) {
-            ultra_sampling_paused = true;
-            ultra_frame_ready = true;
+        if (cmdv == 0x13 || cmdv == 0x03) {
+            // 1회 스냅샷: 기존 함수 그대로 사용
             Send_Monitoring_Snapshot_JSON();
             return;
         }
     }
+     else if (cp->has_topic && strcmp(cp->topic, "snap_cfg") == 0) {
+        // target 체크는 위랑 똑같이
+        bool target = (!cp->has_mid) || (cp->mid==0) || (cp->mid==my_mid);
+        if (!target) return;
 
-    // =========================================================
-    // SNAP 주기 설정
-    // =========================================================
-    else if (cp->has_topic && strcmp(cp->topic, "snap") == 0) {
+        // 예: cp->p_has_on : 1 = enable, 0 = disable
+        //     cp->p_has_period_ms : 주기 ms (CBOR 스키마에 맞게 필드명 조정)
+        if (cp->p_has_on) {
+            g_snap_enable = cp->p_on ? 1 : 0;
+        }
+        if (cp->p_has_period_ms) {
+            g_snap_interval_ms = cp->p_period_ms;
+            if (g_snap_interval_ms < 1000) g_snap_interval_ms = 1000; // 1초 밑은 막기
+        }
+        g_snap_next_tick = HAL_GetTick() + g_snap_interval_ms;
 
-            if (cp->p_has_on)
-                g_snap_enable = cp->p_on ? 1 : 0;
+        // ACK 하나 보내고 끝내도 됨
+        uint8_t ob[128]; size_t on=0;
+        cbor_packet_t rp = {0};
+        rp.has_k=1; rp.k=1;
+        rp.has_topic=1; strcpy(rp.topic,"snap_cfg");
+        rp.has_ok=1; rp.ok=1;
+        if (cp->has_n) { rp.has_n=1; rp.n=cp->n; }
 
-            if (cp->p_has_period_ms) {
-                g_snap_interval_ms = cp->p_period_ms;
-                if (g_snap_interval_ms < 1000)
-                    g_snap_interval_ms = 1000;
-            }
-
-            g_snap_next_tick = HAL_GetTick() + g_snap_interval_ms;
-
-            AckBin_t ack = {0};
-            ack.t = 0x10;  // generic_ack
-            memcpy(ack.uid, uid12, 12);
-            ack.msg_id   = cp->has_msg_id ? cp->msg_id : 0;
-            ack.ok       = 1;
-            ack.err_code = 0;
-
-            send_wisun_binary(g_last_rx_tmid, (uint8_t*)&ack, sizeof(ack));
-            return;
-	}
-}*/
-
-
+        if (cbor_encode_packet(ob,sizeof(ob),&rp,&on)) {
+            send_wisun_resp(g_last_rx_tmid, ob, on);
+        }
+    }
+    // else if (cp->has_topic && strcmp(cp->topic,"your_new_cmd")==0) { ... }
+}
 
 
 /* USER CODE END 0 */
@@ -1241,9 +1048,6 @@ int main(void)
   /* Configure the system clock */
   SystemClock_Config();
 
-  /* Configure the peripherals common clocks */
-  PeriphCommonClock_Config();
-
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
@@ -1256,7 +1060,15 @@ int main(void)
   MX_USART6_UART_Init();
   MX_TIM2_Init();
   MX_RTC_Init();
-  MX_ADC2_Init();
+  Read_UID();
+  init_uid_string();
+
+  mid_storage_init();
+  if (load_mid_from_flash(&loaded)) {
+      my_mid = loaded;
+  } else {
+      my_mid = MID_INVALID; // 미할당 상태
+  }
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart1, &rxByte1, 1);
   HAL_UART_Receive_IT(&huart6, &rxByte, 1);
@@ -1265,15 +1077,7 @@ int main(void)
   {
     Error_Handler();
   }
-
-  //HAL_ADC_Start_IT(&hadc1);
-  Ultra_StartSampling();
-
-  if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
-   {
-     Error_Handler();
-   }
-  //HAL_ADC_Start_IT(&hadc2);
+  HAL_ADC_Start_IT(&hadc1);
   /*if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_dma_buffer, FFT_SIZE) != HAL_OK)
     {
         Error_Handler();
@@ -1293,24 +1097,19 @@ int main(void)
 //        HAL_DAC_Start(&hdac1, DAC_CHANNEL_2);
 
     if (arm_rfft_fast_init_f32(&fftInstance, FFT_SIZE) != ARM_MATH_SUCCESS) {
-        char msg[] = "FFT 초기화 실패\r\n";
+        char msg[] = "❌ FFT 초기화 실패\r\n";
         HAL_UART_Transmit(&huart6, (uint8_t*)msg, sizeof(msg) - 1, HAL_MAX_DELAY);
     }
     HAL_TIM_Base_Start(&htim2);   // now_us()용 타이머 시작
+    //Ultra_StartSampling();
 
-    init_uid_string();
 
-    uint16_t stored_mid = MID_INVALID;
-    if (load_mid_from_flash(&stored_mid) && stored_mid != MID_INVALID && stored_mid != 0) {
-	    my_mid = stored_mid;
-    }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
     while (1)
     {
-    	hop_tx_task_poll();
         if (wisun_packet_ready) {
             __disable_irq();
             uint16_t len = wisun_packet_len;
@@ -1321,51 +1120,34 @@ int main(void)
 
             wisun_frame_view_t v = {0};
             if (wisun_parse_frame(buf, len, &v)) {
+                // ★ 응답에서 반사용 TMID 저장
                 g_last_rx_tmid = v.tmid;
-                if (v.data_len >= 4) {          // ★ 추가: 최소 4바이트 확인
-                	uint8_t  ttl    = v.data[0];
-					uint8_t  cmd    = v.data[1];
-					uint8_t  flags  = v.data[2];
-					uint16_t msg_id = (v.data[3] << 8) | v.data[4];
 
-					handle_binary_cmd(cmd, flags, msg_id, v.tmid, v.data, v.data_len);
-				}
-
-                /*const uint8_t *cbor = NULL; size_t cbor_len = 0;
+                const uint8_t *cbor = NULL; size_t cbor_len = 0;
                 if (find_cbor_map_slice(v.data, v.data_len, &cbor, &cbor_len)) {
                     cbor_packet_t cp = {0};
                     if (cbor_decode_packet(cbor, cbor_len, &cp)) {
                         uint8_t kind = cp.has_k ? cp.k : 0xFF;
-                        g_last_has_msg_id = cp.has_msg_id;
-						if (cp.has_msg_id) {
-							g_last_msg_id = cp.msg_id;
-						}
-
-						g_last_has_cmd = cp.has_cmd;
-						if (cp.has_cmd) {
-							g_last_cmd = (int)cp.cmd;
-						}
-                        if (kind == 0) {
-                        	handle_req(&cp);
-                        }
+                        if (kind == 0) handle_req(&cp); // req만 처리
                     }
-                }*/
-
+                }
             }
         }
-        
+
+        // ★ 여기! RX가 없어도 예약된 TX가 있으면 보내도록 주기적으로 폴링
         tx_task_poll();
 
         if (g_snap_enable) {
-		uint32_t now = HAL_GetTick();
-		if ((int32_t)(now - g_snap_next_tick) >= 0) {
-			Send_Monitoring_Snapshot_JSON();
-			g_snap_next_tick = now + g_snap_interval_ms;
-		}
-      }
+            uint32_t now = HAL_GetTick();
+            if ((int32_t)(now - g_snap_next_tick) >= 0) {
+                Send_Monitoring_Snapshot_JSON();
+                g_snap_next_tick = now + g_snap_interval_ms;
+            }
+        }
     }
-    /* USER CODE END 3 */
+  /* USER CODE END 3 */
 }
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -1427,34 +1209,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief Peripherals Common Clock Configuration
-  * @retval None
-  */
-void PeriphCommonClock_Config(void)
-{
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
-
-  /** Initializes the peripherals clock
-  */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADCDAC;
-  PeriphClkInitStruct.PLL2.PLL2Source = RCC_PLL2_SOURCE_HSE;
-  PeriphClkInitStruct.PLL2.PLL2M = 5;
-  PeriphClkInitStruct.PLL2.PLL2N = 100;
-  PeriphClkInitStruct.PLL2.PLL2P = 2;
-  PeriphClkInitStruct.PLL2.PLL2Q = 2;
-  PeriphClkInitStruct.PLL2.PLL2R = 23;
-  PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2_VCIRANGE_2;
-  PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2_VCORANGE_WIDE;
-  PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
-  PeriphClkInitStruct.PLL2.PLL2ClockOut = RCC_PLL2_DIVR;
-  PeriphClkInitStruct.AdcDacClockSelection = RCC_ADCDACCLKSOURCE_PLL2R;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-/**
   * @brief ADC1 Initialization Function
   * @param None
   * @retval None
@@ -1476,13 +1230,13 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV2;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -1546,65 +1300,6 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
-}
-
-/**
-  * @brief ADC2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC2_Init(void)
-{
-
-  /* USER CODE BEGIN ADC2_Init 0 */
-
-  /* USER CODE END ADC2_Init 0 */
-
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC2_Init 1 */
-
-  /* USER CODE END ADC2_Init 1 */
-
-  /** Common config
-  */
-  hadc2.Instance = ADC2;
-  hadc2.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV2;
-  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc2.Init.LowPowerAutoWait = DISABLE;
-  hadc2.Init.ContinuousConvMode = DISABLE;
-  hadc2.Init.NbrOfConversion = 1;
-  hadc2.Init.DiscontinuousConvMode = DISABLE;
-  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc2.Init.DMAContinuousRequests = DISABLE;
-  hadc2.Init.SamplingMode = ADC_SAMPLING_MODE_NORMAL;
-  hadc2.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc2.Init.OversamplingMode = DISABLE;
-  if (HAL_ADC_Init(&hadc2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_8;
-  sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
-  sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.OffsetNumber = ADC_OFFSET_NONE;
-  sConfig.Offset = 0;
-  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC2_Init 2 */
-
-  /* USER CODE END ADC2_Init 2 */
 
 }
 
@@ -1894,7 +1589,6 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
 
@@ -1927,25 +1621,64 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static void push_snapshot(bool light_on,
-                          float voltage,
-                          float current,
-                          float temp,
-                          float supersonic)
-{
-    snapshot_t s = {
-        .light_on   = light_on,
-        .voltage    = voltage,
-        .current    = current,
-        .supersonic = supersonic,
-        .temp       = temp,
-        .count      = g_monitor_count,
-    };
+/*void Process_WiSun_Command(uint8_t *data, uint8_t len) {
+    uint8_t cmd_id = data[IDX_CMD_ID];
+    switch (cmd_id) {
 
-    g_snap[g_snap_head] = s;
-    g_snap_head = (g_snap_head + 1u) % SNAP_RING_SIZE;
-    g_snap_inited = true;
-}
+
+    	case CMD_READ_UID: {
+                char uid_str[32];
+                Format_UID(uid_str, sizeof(uid_str));
+                // uid_str 예: "00112233-44556677-8899AABB\r\n"
+
+                // 패킷 헤더(STX/SIG/LEN/TMID) + uid_str + CS + ETX 구성
+                uint8_t resp[64];
+                int idx = 0;
+                resp[idx++] = PACKET_STX;
+                resp[idx++] = SIG1;
+                resp[idx++] = SIG2;
+                // LEN = TMID(1) + uid_str 길이 + CS(1) + ETX(1)
+                resp[idx++] = 1 + strlen(uid_str) + 1 + 1;
+                resp[idx++] = CMD_READ_UID;
+                // 페이로드로 uid_str 복사
+                memcpy(&resp[idx], uid_str, strlen(uid_str));
+                idx += strlen(uid_str);
+                // 체크섬
+                resp[idx++] = calc_checksum(&resp[1], idx-1);
+                resp[idx++] = PACKET_ETX;
+
+                HAL_UART_Transmit(&huart1, resp, idx, HAL_MAX_DELAY);
+                break;
+         }
+
+        default:
+            Send_NAK_UART1();
+            break;
+    }
+}*/
+/* static void Poll_Temperature_And_Print(void)
+{
+    static uint32_t last_temp_tick = 0;
+    uint32_t now = HAL_GetTick();
+
+    // 500ms마다 한 번만 측정
+    if ((int32_t)(now - last_temp_tick) < 0) return;
+    if (now - last_temp_tick < 500) return;
+    last_temp_tick = now;
+
+    if (HAL_ADC_Start(&hadc2) != HAL_OK) return;
+
+    if (HAL_ADC_PollForConversion(&hadc2, 10) == HAL_OK) {
+        uint16_t raw = HAL_ADC_GetValue(&hadc2);
+        float v = (raw * 3.3f) / 4095.0f;
+
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg),
+                         "TEMP ADC2 raw=%u, V=%.3f\r\n", raw, v);
+        HAL_UART_Transmit(&huart6, (uint8_t*)msg, n, 100);
+    }
+    HAL_ADC_Stop(&hadc2);
+} */
 
 void Vac_Ctrl(void) {
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, 1);
@@ -1958,7 +1691,12 @@ static void Read_UID_local(void){
     uid_ram_local[1] = uid_ram[1];
     uid_ram_local[2] = uid_ram[2];
 }
-
+static void init_uid_string(void){
+    Read_UID_local();
+    snprintf(g_uid_str, sizeof(g_uid_str),
+             "%08" PRIX32 "-%08" PRIX32 "-%08" PRIX32,
+             uid_ram_local[2], uid_ram_local[1], uid_ram_local[0]);
+}
 
 void Read_UID(void) {
     uid_ram[0] = UID_ADDRESS[0];
@@ -1966,18 +1704,19 @@ void Read_UID(void) {
     uid_ram[2] = UID_ADDRESS[2];
 }
 
-static void init_uid_string(void){
-    Read_UID_local();
-    snprintf(g_uid_str, sizeof(g_uid_str),
-             "%08" PRIX32 "-%08" PRIX32 "-%08" PRIX32,
-             uid_ram_local[2], uid_ram_local[1], uid_ram_local[0]);
-}
+
 void Format_UID(char *msg, size_t size) {
     Read_UID();  // Unique ID ?   ??
     snprintf(msg, size, "%08" PRIX32 "-%08" PRIX32 "-%08" PRIX32 "\r\n",
              uid_ram[2], uid_ram[1], uid_ram[0]);
 }
 
+// ?   UART2 ?? Unique ID ?  ?  ?  ?   ?  ?
+/*void Send_UID_UART2(void) {
+    char msg[100];  // 메시 ??????????? 버퍼
+    Format_UID(msg, sizeof(msg));  // Unique ID ??????????? 문자?   ???????????  ????????????
+    HAL_UART_Transmit(&huart6, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+}*/
 uint32_t Get_Device_ID(void) {
            return DBGMCU->IDCODE;  // Device ID ?   ??
 }
@@ -2017,27 +1756,6 @@ float Convert_Voltage_To_Current(float voltage, float offset) {
     return current;
 }
 
-
-static void apply_mid(uint16_t new_mid)
-{
-    if (new_mid == 0 || new_mid == MID_INVALID) {
-        return;
-    }
-
-    // 1) Wi-SUN 모듈에 설정 (AT)
-    char cmd_buf[32];
-    int n = snprintf(cmd_buf, sizeof(cmd_buf), "AT+MID=%u\r\n", new_mid);
-    HAL_UART_Transmit(&huart1, (uint8_t*)cmd_buf, (uint16_t)n, HAL_MAX_DELAY);
-
-    // 2) 로컬 변수 업데이트
-    my_mid = new_mid;
-
-    // 3) flash 저장
-    save_mid_to_flash(my_mid);
-
-    // 4) 디버깅용 출력
-    dbg_print_mid_info("[SET_MID]", my_mid, 0);
-}
 
 void Print_Voltage_Current(void) {
 	ADC_ChannelConfTypeDef sConfig = {0};
@@ -2079,23 +1797,20 @@ void PrintReceivedPacket(const char* prefix, const uint8_t* data, uint16_t lengt
     RTC_TimeTypeDef sTime;
     RTC_DateTypeDef sDate;
 
-    /*HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);*/
+    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
     int pos = 0;
-    /*pos += snprintf(msg, sizeof(msg), "[%02d:%02d:%02d] %s",
-                        sTime.Hours, sTime.Minutes, sTime.Seconds, prefix);*/
+    pos += snprintf(msg, sizeof(msg), "[%02d:%02d:%02d] %s",
+                        sTime.Hours, sTime.Minutes, sTime.Seconds, prefix);
     for (int i = 0; i < length && pos < sizeof(msg) - 3; i++) {
         pos += snprintf(&msg[pos], sizeof(msg) - pos, "%02X ", data[i]);
     }
-    for (int i = 0; i < length; ++i) {
-        if (pos > 240 || i == length-1) {
-            msg[pos++] = '\r';
-            msg[pos++] = '\n';
-            HAL_UART_Transmit(&huart6, (uint8_t*)msg, pos, HAL_MAX_DELAY);
-            pos = 0;
-        }
-    }
+
+    msg[pos++] = '\r';
+    msg[pos++] = '\n';
+    msg[pos] = '\0';
+
     HAL_UART_Transmit(&huart6, (uint8_t*)msg, pos, HAL_MAX_DELAY);
 }
 
@@ -2137,43 +1852,6 @@ void ExtractFullFFT(FftData_t *dest) {
         }
 }
 
-static void scheduler_poll(void)
-{
-    RTC_TimeTypeDef t;
-    RTC_DateTypeDef d;
-
-    HAL_RTC_GetTime(&hrtc, &t, RTC_FORMAT_BIN);
-    HAL_RTC_GetDate(&hrtc, &d, RTC_FORMAT_BIN);
-
-    // 현재 시각을 "자정 기준 분 단위"로 변환
-    uint16_t now_min = (uint16_t)t.Hours * 60u + t.Minutes;
-
-    // 설정값(g_cfg)을 동일하게 분 단위로 변환
-    uint16_t on_min  = (uint16_t)g_cfg.light_on_hour  * 60u + g_cfg.light_on_min;
-    uint16_t off_min = (uint16_t)g_cfg.light_off_hour * 60u + g_cfg.light_off_min;
-
-    // 날짜가 바뀌면 하루 플래그를 리셋
-    if (sched_last_day != d.Date) {
-        sched_last_day = d.Date;
-        on_done_today  = false;
-        off_done_today = false;
-    }
-
-    // ON 스케줄
-    if (!on_done_today && now_min >= on_min) {
-        // 실제 조명 ON 제어
-        HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin, GPIO_PIN_SET);
-        on_done_today = true;
-    }
-
-    // OFF 스케줄
-    if (!off_done_today && now_min >= off_min) {
-        // 실제 조명 OFF 제어
-        HAL_GPIO_WritePin(LIGHT_GPIO_Port, LIGHT_Pin, GPIO_PIN_RESET);
-        off_done_today = true;
-    }
-}
-
 
 void Query_MID_From_WiSUN() {
     const char *cmd = "AT+MID?\r\n";
@@ -2196,23 +1874,6 @@ void Parse_AT_Response(const char* buffer) {
     }
 }
 
-void wisun_toss_packet(uint16_t tmid, const uint8_t *rx, uint16_t rx_len)
-{
-    wisun_frame_view_t v;
-    if (!wisun_parse_frame(rx, rx_len, &v)) {
-        return; // 프레임이 이상하면 그냥 버림
-    }
-
-    wisun_frame_cfg_t cfg = {
-        .sig1 = 0xAA,
-        .sig2 = 0xAB,   // 네가 원하는 TX용 SIG 규칙
-        .tmid = tmid,
-    };
-
-    // v.data / v.data_len 은 레거시든 새 포맷이든 알아서 맞게 설정됨
-    wisun_send_frame(&cfg, v.data, v.data_len, wisun_tx_adapter, NULL);
-}
-
 void Ultra_StartSampling(void) {
     wr_idx = 0;
     ultra_frame_ready = false;
@@ -2227,37 +1888,59 @@ void Ultra_ResumeNextFrame(void) {
     HAL_ADC_Start_IT(&hadc1);
 }
 
-/* void Process_Ultra_Frame_Then_VI(void)
-{
-    if (!ultra_frame_ready || !ultra_sampling_paused) return;
-    static uint16_t local_raw[FFT_SIZE];
-    static float    local_in [FFT_SIZE];
-    __disable_irq();
-    ultra_frame_ready = false;
-    for (int i=0; i<FFT_SIZE; ++i) { local_raw[i] = raw_buffer[i]; local_in[i] = inputSignal[i]; }
-    __enable_irq();
+//============================================= 변화 기반 ====================================//
+/*void loop_fft_for_duration(uint32_t duration_ms) {
+    uint32_t start_time = HAL_GetTick();
+    char msg[64];
+    uint16_t prev_raw = 0;
+    const uint16_t THRESHOLD_DIFF = 30;  // 진폭 튐 감지 기준
 
-    VIRead vi;
-    if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-        // --- 변환: 가장 단순 버전 ---
-        float vin_v     = (float)vi.volt_raw * (3.3f / 4095.0f);
-        float i_adc = (float)vi.curr_raw * K_ADC2V;
+    while (HAL_GetTick() - start_time < duration_ms) {
+        bool should_perform_fft = false;
 
-        // 간단 출력 (짧은 포맷)
-        char m[96];
-        int n = snprintf(m, sizeof(m),
-                         "VI: %u,%u => %.3f V, %.3f A @ %luus\r\n",
-                         vi.volt_raw, vi.curr_raw, vin_v, i_adc, vi.t_us);
-        HAL_UART_Transmit(&huart6, (uint8_t*)m, n, 20);
-    } else {
-        char m[] = "VI read failed\r\n";
-        HAL_UART_Transmit(&huart6, (uint8_t*)m, sizeof(m)-1, 10);
+        for (int i = 0; i < FFT_SIZE; i++) {
+            HAL_ADC_Start(&hadc1);
+
+            uint16_t raw = 0;
+            for (int rank = 0; rank < 3; rank++) {
+                HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+                uint16_t value = HAL_ADC_GetValue(&hadc1);
+                if (rank == 2) {
+                    raw = value;
+                }
+            }
+            HAL_ADC_Stop(&hadc1);
+
+            // === raw 값 UART6 출력 ===
+            int raw_len = snprintf(msg, sizeof(msg), "RAW[%d]: %u\r\n", i, raw);
+            HAL_UART_Transmit(&huart6, (uint8_t*)msg, raw_len, HAL_MAX_DELAY);
+
+            if (i > 0 && abs((int)raw - (int)prev_raw) > THRESHOLD_DIFF) {
+                should_perform_fft = true;
+            }
+            prev_raw = raw;
+
+            inputSignal[i] = ((float32_t)raw) * (3.3f / 4095.0f) - 1.65f;
+        }
+
+        if (should_perform_fft) {
+            ExtractFullFFT(fft_packet);
+            for (int i = 0; i < FFT_SIZE / 2; i += 16) {
+                int len = snprintf(msg, sizeof(msg), "%u,%.4f\r\n",
+                                   fft_packet[i].freq, fft_packet[i].amplitude);
+                HAL_UART_Transmit(&huart6, (uint8_t*)msg, len, HAL_MAX_DELAY);
+            }
+        } else {
+            char skip_msg[] = "No significant signal change, FFT skipped\r\n";
+            HAL_UART_Transmit(&huart6, (uint8_t*)skip_msg, strlen(skip_msg), HAL_MAX_DELAY);
+        }
+
+        HAL_Delay(FFT_DELAY_MS);
     }
 
-    ExtractFullFFT(fft_packet);
-    Print_FFT_Summary(local_raw);
-    Ultra_ResumeNextFrame();
-} */
+    char done[] = "=== 1분 FFT 측정 완료 ===\r\n";
+    HAL_UART_Transmit(&huart6, (uint8_t*)done, strlen(done), HAL_MAX_DELAY);
+}*/
 
 /*void Transfer_ADC_To_DAC(void)
 {

@@ -56,6 +56,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern ADC_HandleTypeDef hadc1;
+extern ADC_HandleTypeDef hadc2;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart6;
@@ -240,6 +241,20 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles ADC2 global interrupt.
+  */
+void ADC2_IRQHandler(void)
+{
+  /* USER CODE BEGIN ADC2_IRQn 0 */
+
+  /* USER CODE END ADC2_IRQn 0 */
+  HAL_ADC_IRQHandler(&hadc2);
+  /* USER CODE BEGIN ADC2_IRQn 1 */
+
+  /* USER CODE END ADC2_IRQn 1 */
 }
 
 /**
