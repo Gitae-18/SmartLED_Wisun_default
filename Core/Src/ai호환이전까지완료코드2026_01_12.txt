@@ -42,8 +42,6 @@
 #include "app_x-cube-ai.h"
 #include "quant.h"
 #include <stdarg.h>
-#include "APP/network.h"
-#include <assert.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -269,13 +267,6 @@ static AckBin_t g_nodeinfo_ack;
 #define FW_MINOR 0
 #endif
 
-#define BASE_ALPHA        (0.0015f)
-#define NOISE_ALPHA       (0.01f)
-#define TRIG_K            (4.0f)
-#define TRIG_MARGIN       (0.005f)
-#define TRIG_HOLD_SAMPLES (32u)
-#define NOISE_MIN         (0.001f)
-
 #define SAMPLING_RATE 950000.0f
 #define PACKET_STX    0x02
 #define PACKET_ETX    0x03
@@ -425,9 +416,6 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
-typedef char static_assert_AE_COLS_mismatch[
-    (AE_COLS == AI_NETWORK_IN_1_SIZE) ? 1 : -1
-];
 extern ADC_HandleTypeDef hadc2;
 PacketParserState packet_state = WAITING_FOR_STX;
 static snapshot_t g_snap[SNAP_RING_SIZE];
@@ -445,11 +433,7 @@ static volatile uint16_t wisun_packet_len   = 0;
 static uint8_t           wisun_packet_shadow[PACKET_MAX_SIZE];
 static volatile uint16_t wisun_rx_need  = 0;
 static volatile uint8_t g_wait_mid_query = 0;
-volatile uint32_t g_ultra_frame_tick = 0;
-static uint8_t capturing = 0;
 
-static float ai_mse = 0.0f;
-static int ai_pred = 0;
 static char at_accum[256];
 static uint16_t at_accum_len = 0;
 
@@ -492,20 +476,6 @@ static volatile int       wr_idx           = 0;
 static volatile size_t   ultra_idx = 0;
 static volatile bool     ultra_frame_ready = false;
 static volatile bool     ultra_sampling_paused = false;
-
-static float baseline = 0.0f;
-static float noise_level = 0.01f;  // 초기값 적당히
-static uint8_t trig_on = 0;
-static uint16_t trig_hold = 0;
-
-volatile uint32_t g_adc_isr_cnt = 0;
-volatile uint32_t g_trig_fire_cnt = 0;
-volatile uint32_t g_frame_ready_cnt = 0;
-volatile float    g_last_dev = 0.0f, g_last_thr = 0.0f, g_last_noise = 0.0f;
-volatile uint16_t g_last_wr = 0;
-volatile uint8_t  g_last_cap = 0;
-
-static uint16_t uart_fail_cnt   = 0;
 static volatile uint32_t t_frame_start_us = 0;
 static uint8_t pa12_state = 0;
 static volatile uint32_t t_frame_end_us   = 0;
@@ -622,7 +592,6 @@ volatile uint8_t packet_flag = 0;
 volatile uint32_t g_sec_tick = 0;
 volatile uint8_t started = 0;
 volatile uint8_t g_fault_inject = 0;
-volatile uint8_t g_adc_kick = 0;
 
 static uint32_t ai_test_start = 0;
 static uint8_t  ai_test_done  = 0;
@@ -644,12 +613,13 @@ static void MX_USART6_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_RTC_Init(void);
 static void MX_ADC2_Init(void);
+
 /* USER CODE BEGIN PFP */
 
 void ADC1_Start_Regular_IN18_IT(void);
 static inline float adc_to_vsense(uint16_t raw);
 static void apply_mid(uint16_t new_mid);
-static void apply_rch(uint8_t r0, uint8_t r1);
+static void apply_channel(uint8_t ch);
 static void apply_mid_chan_from_cfg(void);
 static void ai_service(void);
 static inline uint8_t at_q_next(uint8_t x);
@@ -1239,12 +1209,11 @@ static void handle_binary_cmd(uint8_t cmd,
                         apply_mid(new_mid);
 
                         // 2) 채널 cfg + flash 반영
-                        g_node_cfg.rch[0] = 0;
-                        g_node_cfg.rch[1] = new_ch;
+                        g_node_cfg.rf_channel = new_ch;
                         (void)save_node_cfg_to_flash(&g_node_cfg);
 
                         // 3) 채널 AT 설정
-                        apply_rch(g_node_cfg.rch[0], g_node_cfg.rch[1]);
+                        apply_channel(new_ch);
 
                         // 4) (선택) ACK 전송
                         /*
@@ -1332,7 +1301,7 @@ static void handle_binary_cmd(uint8_t cmd,
                 resp.msg_id = msg_id;
                 resp.ok = 1;
                 resp.err_code = 0;
-                resp.ch = g_node_cfg.rch[1];   // 저장된 값
+                resp.ch = g_node_cfg.rf_channel;   // 저장된 값
                 char s[96];
 				snprintf(s, sizeof(s),
 						 "[GET_CH]  tmid =0x%04X msg_id=0x%04X ch=%u\r\n",
@@ -1394,8 +1363,8 @@ static void handle_binary_cmd(uint8_t cmd,
                 resp.mode = g_node_cfg.mode;
 
                 // 채널은 cfg 우선(정책), 필요하면 node_info 우선으로 바꿔도 됨
-                resp.rch0 = g_node_cfg.rch[0];
-                resp.rch1 = g_node_cfg.rch[1]; // N/A (cfg가 1채널이라면)
+                resp.rch0 = g_node_cfg.rf_channel;
+                resp.rch1 = 0xFF; // N/A (cfg가 1채널이라면)
 
                 // ✅ 장치/모듈 정보(info cache)에서 오는 값
                 resp.gid  = g_node_info.gid;
@@ -1512,7 +1481,6 @@ void ADC1_Start_Regular_IN18_IT(void)
 }
 
 
-/*
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance != ADC1) return;
@@ -1525,8 +1493,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     wr_idx++;
     if (wr_idx >= FFT_SIZE) {
         wr_idx = 0;
-
-        g_ultra_frame_tick = HAL_GetTick();
         ultra_frame_ready = true;
 
         ultra_sampling_paused = true;
@@ -1534,41 +1500,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     }
     if (!ultra_sampling_paused) {
 	   HAL_ADC_Start_IT(&hadc1);
-    }
-}
-*/
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance != ADC1) return;
-    g_adc_isr_cnt++;
-
-    uint16_t raw = HAL_ADC_GetValue(hadc);
-    float x = ((float)raw * 3.3f / 4095.0f) - 1.65f;
-
-    // 1) 캡처 중이 아니면 baseline/noise 갱신 + 트리거 검사
-    if (!ultra_sampling_paused) {
-
-            inputSignal[wr_idx++] = x;
-
-            // 디버그(원하면 유지)
-            g_last_wr  = wr_idx;
-
-            if (wr_idx >= FFT_SIZE) {
-                wr_idx = 0;
-
-                ultra_frame_ready = true;
-                ultra_sampling_paused = true;
-                g_frame_ready_cnt++;
-
-                // 프레임 다 찼으니 ADC stop (다음 재시작은 Resume에서)
-                (void)HAL_ADC_Stop_IT(&hadc1);
-                return;
-            }
-    }
-    // 기존 방식 유지: single conversion을 계속 걸어야 한다면
-    if (!ultra_sampling_paused) {
-        //HAL_ADC_Start_IT(&hadc1);
-    	g_adc_kick = 1;
     }
 }
 
@@ -2502,184 +2433,143 @@ int main(void)
 
     apply_mid_chan_from_cfg();
     reconfigure_snapshot_timer_from_cfg();
-    printf("[MIDCH_BOOT] mid=0x%04X ch=%u,%u assigned=%u (src=%s)\r\n",
-	   my_mid,  g_node_cfg.rch[0], g_node_cfg.rch[1], g_node_cfg.mid_assigned,
+    printf("[MIDCH_BOOT] mid=0x%04X ch=%u assigned=%u (src=%s)\r\n",
+	   my_mid, g_node_cfg.rf_channel, g_node_cfg.mid_assigned,
 	   (mid_loaded && stored_mid != MID_INVALID && stored_mid != 0) ? "flash" : "wisun");
 
     static uint32_t ai_last_infer_tick = 0;
     static int      g_ai_last_result   = 0;
-    light_on();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
     while (1)
-    {
-        uint32_t now = HAL_GetTick();
-
-        boot_poll();
-        hop_tx_task_poll();
-        resp_slot_task_poll();
-        scheduler_poll();
-        wisun_process_rx_mainloop();
-
-        /* Debug FFT */
-        /*
-        if (g_adc_kick && !ultra_sampling_paused) {
-            g_adc_kick = 0;
-            (void)HAL_ADC_Start_IT(&hadc1);
-        }
-
-        if (ultra_sampling_paused) {
-            Debug_Print_FFT_Peak(); // ready 여부는 함수가 판단
-        }
-        */
-
-        /* ===================== Wi-SUN RX ===================== */
-        if (wisun_packet_ready)
         {
-            __disable_irq();
+    		uint32_t now = HAL_GetTick();
+    		boot_poll();
+        	hop_tx_task_poll();
+        	resp_slot_task_poll();
+        	scheduler_poll();
+        	wisun_process_rx_mainloop();
+        	if (HAL_GetTick() - last_debug_tick >= 1000) {
+				Debug_Print_FFT_Peak();
+				last_debug_tick = HAL_GetTick();
+			}
+            if (wisun_packet_ready) {
+                __disable_irq();
+                uint16_t len = wisun_packet_len;
+                uint8_t  tmp[PACKET_MAX_SIZE];
+                memcpy(tmp, (const void*)wisun_packet_shadow, len);
+                //memcpy(buf, wisun_packet_shadow, len);
+                wisun_packet_ready = 0;
+                __enable_irq();
+                dbg_dump_uart6_with_tag("[U1 FRAME]", tmp, len);
+                wisun_frame_view_t v = {0};
+                if (wisun_parse_frame(buf, len, &v)) {
+                    g_last_rx_tmid = v.tmid;
+                    uint16_t src_mid = v.tmid;
+                    // 최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7바이트
+                    if (v.data_len >= 7) {
+						uint16_t target_mid = (uint16_t)v.data[0] | ((uint16_t)v.data[1] << 8);
+						uint8_t  ttl        = v.data[2];
+						uint8_t  cmd        = v.data[3];
+						uint8_t  flags      = v.data[4];
+						uint16_t msg_id     = ((uint16_t)v.data[5] << 8) | v.data[6];
 
-            uint16_t len = wisun_packet_len;
-            uint8_t  tmp[PACKET_MAX_SIZE];
-            memcpy(tmp, (const void *)wisun_packet_shadow, len);
-            wisun_packet_ready = 0;
+						const uint8_t *body = (v.data_len > 7) ? &v.data[7] : NULL;
+						uint16_t bodylen    = (v.data_len > 7) ? (v.data_len - 7) : 0;
 
-            __enable_irq();
+						if (target_mid != my_mid && target_mid != 0xFFFF) return;
 
-            dbg_dump_uart6_with_tag("[U1 FRAME]", tmp, len);
-
-            wisun_frame_view_t v = {0};
-            if (wisun_parse_frame(tmp, len, &v))
-            {
-                g_last_rx_tmid = v.tmid;
-                uint16_t src_mid = v.tmid;
-
-                /* 최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7B */
-                if (v.data_len >= 7)
-                {
-                    uint16_t target_mid =
-                        (uint16_t)v.data[0] | ((uint16_t)v.data[1] << 8);
-
-                    uint8_t  ttl    = v.data[2];
-                    uint8_t  cmd    = v.data[3];
-                    uint8_t  flags  = v.data[4];
-                    uint16_t msg_id =
-                        ((uint16_t)v.data[5] << 8) | v.data[6];
-
-                    const uint8_t *body =
-                        (v.data_len > 7) ? &v.data[7] : NULL;
-                    uint16_t bodylen =
-                        (v.data_len > 7) ? (v.data_len - 7) : 0;
-
-                    if (target_mid != my_mid && target_mid != 0xFFFF)
-                        continue;
-
-                    handle_binary_cmd(
-                        cmd, flags, msg_id,
-                        src_mid, body, bodylen
-                    );
+						handle_binary_cmd(cmd, flags, msg_id, src_mid, body, bodylen);
+					}
                 }
             }
-        }
+            if (g_at_line_ready) {
+                HAL_UART_Transmit(&huart6, (uint8_t*)"[AT_LINE_READY]\r\n", 15, 50);
 
-        /* ===================== AT RX ===================== */
-        if (g_at_line_ready)
-        {
-            //HAL_UART_Transmit(&huart6, (uint8_t *)"[AT_LINE_READY]\r\n", 15, 50);
-            char     line_local[RX_BUFFER_SIZE];
-            uint16_t line_len;
+                char line_local[RX_BUFFER_SIZE];
+                uint16_t line_len;
 
-            __disable_irq();
+                __disable_irq();
+                line_len = g_at_line_len;
+                if (line_len >= RX_BUFFER_SIZE) line_len = RX_BUFFER_SIZE - 1;
+                memcpy(line_local, g_at_line, line_len);   // ✅ +1 금지
+                line_local[line_len] = '\0';               // ✅ 여기서 직접 널 넣기
+                g_at_line_ready = 0;
+                __enable_irq();
 
-            line_len = g_at_line_len;
-            if (line_len >= RX_BUFFER_SIZE)
-                line_len = RX_BUFFER_SIZE - 1;
 
-            memcpy(line_local, g_at_line, line_len);
-            line_local[line_len] = '\0';   // 직접 NULL 종료
-            g_at_line_ready = 0;
+                if (g_nodeinfo.pending) {
+					nodeinfo_collect_line(line_local);     // 여기서 last_rx_tick 갱신도 해야 함(collect 안에서)
+				}
 
-            __enable_irq();
+                Parse_AT_Response(line_local);
 
-            if (g_nodeinfo.pending)
-            {
-                nodeinfo_collect_line(line_local);
+            #ifdef DEBUG_AT_TO_PC
+                HAL_UART_Transmit(&huart6, (uint8_t*)line_local, line_len, 50);
+                HAL_UART_Transmit(&huart6, (uint8_t*)"\r\n", 2, 50);
+            #endif
             }
-
-            Parse_AT_Response(line_local);
-
-    #ifdef DEBUG_AT_TO_PC
-            HAL_UART_Transmit(&huart6, (uint8_t *)line_local, line_len, 50);
-            HAL_UART_Transmit(&huart6, (uint8_t *)"\r\n", 2, 50);
-    #endif
-        }
-
-        /* ===================== Node Info ===================== */
-        nodeinfo_poll(now);
-
-        if (g_snap_enable && node_is_provisioned())
-        {
+            nodeinfo_poll(now);
+            if (g_snap_enable && node_is_provisioned()) {
+    		//uint32_t now = HAL_GetTick();
             now = HAL_GetTick();
-            if ((int32_t)(now - g_snap_next_tick) >= 0)
-            {
-                Send_Monitoring_Snapshot_JSON(0);
-                g_snap_next_tick = now + g_snap_interval_ms;
-            }
+    		if ((int32_t)(now - g_snap_next_tick) >= 0) {
+    			Send_Monitoring_Snapshot_JSON(0);
+    			g_snap_next_tick = now + g_snap_interval_ms;
+    		}
+           }
+           rtc_update();
+           update_sun_times();
+    	   int now_min = g_rtc_hour * 60 + g_rtc_min;
+    	   int night = is_night(now_min, g_dusk_min, g_dawn_min);
+    	   /*if (g_dawn_min != prev_dawn || g_dusk_min != prev_dusk) {
+    	       prev_dawn = g_dawn_min;
+    	       prev_dusk = g_dusk_min;
+
+    	       printf("[SUN] date=%04u day=%u now=%02u:%02u dawn=%02u:%02u dusk=%02u:%02u\r\n",
+    	              g_rtc_year, (unsigned)g_rtc_day,
+    	              g_rtc_hour, g_rtc_min,
+    	              g_dawn_min/60, g_dawn_min%60,
+    	              g_dusk_min/60, g_dusk_min%60);
+    	   }*/
+
+    	   static uint8_t forced = 0;
+    	   if (!forced && HAL_GetTick() > 3000) {
+    	       forced = 1;
+    	       ai_pending = 1;     // 또는 ai_ready=1 (너가 쓰는 플래그 이름)
+    	       ai_index   = AE_COLS;
+    	       uart6_log("[AI] forced pending=1\r\n");
+    	   }
+
+    	   static uint32_t hb_t = 0;
+    	   //uint32_t now = HAL_GetTick();
+    	   now = HAL_GetTick();
+    	   static uint32_t ai_feed_tick = 0;
+
+    	   if (!ai_pending && (int32_t)(now - ai_feed_tick) >= 0) {
+    	       ai_feed_tick = now + 10;   // 10ms마다 1샘플
+
+    	       ai_v += ai_dv;
+    	       if (ai_v > 1.0f)  { ai_v = 1.0f;  ai_dv = -ai_dv; }
+    	       if (ai_v < -1.0f) { ai_v = -1.0f; ai_dv = -ai_dv; }
+
+    	       //Input_Ai_Model(ai_v);
+    	   }
+
+    	   /*if (now - hb_t >= 1000) {
+    	       hb_t = now;
+    	       uart6_log("[HB] t=%lu ai_idx=%u pending=%u wisun=%u at=%u\r\n",
+    	                 (unsigned long)now,
+    	                 (unsigned)ai_index,
+    	                 (unsigned)ai_pending,        // ai_pending을 쓰는 경우
+    	                 (unsigned)wisun_packet_ready,
+    	                 (unsigned)g_at_line_ready);
+    	   }*/
+    	   //ai_service();
         }
-
-        /* ===================== RTC / SUN ===================== */
-        rtc_update();
-        update_sun_times();
-
-        int now_min = g_rtc_hour * 60 + g_rtc_min;
-        int night   = is_night(now_min, g_dusk_min, g_dawn_min);
-
-        if (g_dawn_min != prev_dawn || g_dusk_min != prev_dusk)
-        {
-            prev_dawn = g_dawn_min;
-            prev_dusk = g_dusk_min;
-
-            printf(
-                "[SUN] date=%04u day=%u now=%02u:%02u "
-                "dawn=%02u:%02u dusk=%02u:%02u\r\n",
-                g_rtc_year,
-                (unsigned)g_rtc_day,
-                g_rtc_hour, g_rtc_min,
-                g_dawn_min / 60, g_dawn_min % 60,
-                g_dusk_min / 60, g_dusk_min % 60
-            );
-        }
-
-        /* ===================== AI ===================== */
-        static uint8_t forced = 0;
-        if (!forced && HAL_GetTick() > 3000)
-        {
-            forced = 1;
-            ai_pending = 1;
-            ai_index = AE_COLS;
-            uart6_log("[AI] forced pending=1\r\n");
-        }
-
-        static uint32_t hb_t = 0;
-        static uint32_t ai_feed_tick = 0;
-        now = HAL_GetTick();
-
-        if (!ai_pending && now - ai_feed_tick >= 10)
-        {
-        	ai_feed_tick = now;
-        	Input_Ai_Model(ai_v);
-        }
-        if (now - hb_t >= 1000) {
-          hb_t = now;
-          uart6_log("[HB] t=%lu ai_idx=%u pending=%u wisun=%u at=%u\r\n", (unsigned long)now, (unsigned)ai_index, (unsigned)ai_pending,
-          // ai_pending을 쓰는 경우
-          (unsigned)wisun_packet_ready, (unsigned)g_at_line_ready);
-         }
-        if (ai_pending) {
-            ai_service();
-        }
-    }
   /* USER CODE END 3 */
 }
 
@@ -2911,7 +2801,7 @@ static void MX_ADC2_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_247CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -3254,22 +3144,26 @@ static void ai_service(void)
     if ((int32_t)(now - ai_next_run) < 0) return;
     if (wisun_packet_ready || g_at_line_ready) return;
 
-
+    // ✅ 여기! run_inference 호출 전후를 감싸서 시간 측정
     uint32_t t0 = HAL_GetTick();
-    int r = run_inference(ai_input, &ai_mse, &ai_pred);
+    int r = run_inference(ai_input);
     uint32_t dt = HAL_GetTick() - t0;
-    if (r != 0) {
-        char err[64];
-        int n = snprintf(err, sizeof(err),
-                         "AI run ERR=%d dt=%lu ms\r\n",
-                         r, (unsigned long)dt);
-        HAL_UART_Transmit(&huart6, (uint8_t*)err, n, 50);
 
-        ai_pending = 0;
-        ai_index = 0;
-        ai_next_run = now + ai_period_ms;
-        return;   // ⭐ 여기서 반드시 탈출
+    char msg[64];
+	int n = snprintf(msg, sizeof(msg), "AI dt=%lu ms\r\n", (unsigned long)dt);
+	if (n < 0) n = 0;
+	if (n > (int)sizeof(msg)) n = (int)sizeof(msg);
+
+	HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)n, 50);
+
+    ai_pending = 0;
+    ai_index = 0;
+
+    // (선택) dt가 크면 더 천천히 돌리기
+    if (dt > ai_budget_ms) {
+        ai_period_ms = (ai_period_ms < 2000) ? (ai_period_ms * 2) : 2000;
     }
+    ai_next_run = now + ai_period_ms;
 }
 
 static void push_snapshot(bool light_on,
@@ -3493,16 +3387,15 @@ static void apply_mid(uint16_t new_mid)
     dbg_print_mid_info("[SET_MID]", my_mid, 0);
 }
 
-static void apply_rch(uint8_t r0, uint8_t r1)
+static void apply_channel(uint8_t ch)
 {
     char cmd_buf[32];
-    int n = snprintf(cmd_buf, sizeof(cmd_buf), "AT+RCH=%u,%u\r\n",
-                     (unsigned)r0, (unsigned)r1);
+    int n = snprintf(cmd_buf, sizeof(cmd_buf), "AT+RCH=%u\r\n", (unsigned)ch);
     HAL_UART_Transmit(&huart1, (uint8_t*)cmd_buf, (uint16_t)n, HAL_MAX_DELAY);
 
-    char msg[48];
-    int m = snprintf(msg, sizeof(msg), "[SET_RCH] rch=%u,%u\r\n",
-                     (unsigned)r0, (unsigned)r1);
+    // 디버깅 출력
+    char msg[32];
+    int m = snprintf(msg, sizeof(msg), "[SET_CH] ch=%u\r\n", (unsigned)ch);
     HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)m, HAL_MAX_DELAY);
 }
 
@@ -3533,7 +3426,7 @@ static void apply_mid_chan_from_cfg(void)
     }
 
     // 2) 채널 쪽 (0도 유효 채널이라면 그대로 사용)
-    apply_rch(g_node_cfg.rch[0], g_node_cfg.rch[1]);
+    apply_channel(g_node_cfg.rf_channel);
 }
 
 static void nodeinfo_poll(uint32_t now)
@@ -3718,7 +3611,7 @@ void Parse_AT_Response(const char* buffer)
 {
     char dbg[128];
     snprintf(dbg, sizeof(dbg), "[AT] wait=%u line=%s\r\n", g_wait_mid_query, buffer);
-    //HAL_UART_Transmit(&huart6, (uint8_t*)dbg, strlen(dbg), 50);
+    HAL_UART_Transmit(&huart6, (uint8_t*)dbg, strlen(dbg), 50);
 
     // ✅ MID?를 보낸 경우에만 MID 라인 처리
     if (!g_wait_mid_query) return;
@@ -3802,38 +3695,7 @@ static int nodeinfo_append_kv_line(const char *line)
 	if (strncmp(tmp, "MID=",   4) == 0) g_nodeinfo.got_mask |= GOT_MID;
 	if (strncmp(tmp, "DEV=",   4) == 0) g_nodeinfo.got_mask |= GOT_DEV;
 	if (strncmp(tmp, "DSP=",   4) == 0) g_nodeinfo.got_mask |= GOT_DSP;
-	if (strncmp(tmp, "RCH=", 4) == 0) {
-	    g_nodeinfo.got_mask |= GOT_RCH;
-
-	    // tmp 예: "RCH=0,20" 또는 "RCH=20" (둘 다 방어)
-	    const char *v = tmp + 4;
-
-	    int a = -1, b = -1;
-	    if (sscanf(v, " %d , %d", &a, &b) == 2) {
-	        // clamp
-	        if (a < 0) a = 0; if (a > 255) a = 255;
-	        if (b < 0) b = 0; if (b > 255) b = 255;
-
-	        g_node_cfg.rch[0] = (uint8_t)a;
-	        g_node_cfg.rch[1] = (uint8_t)b;
-	    } else if (sscanf(v, " %d", &b) == 1) {
-	        // 만약 모듈이 "RCH=20"처럼 1개만 주는 경우
-	        if (b < 0) b = 0; if (b > 255) b = 255;
-	        g_node_cfg.rch[0] = 0;
-	        g_node_cfg.rch[1] = (uint8_t)b;
-	    }
-
-	    // (선택) flash 저장: 매 부팅마다 쓰기 싫으면 "값 변경 시"로 조건 걸기 추천
-	    (void)save_node_cfg_to_flash(&g_node_cfg);
-
-	    // 디버그
-	    char msg[64];
-	    int m = snprintf(msg, sizeof(msg),
-	                     "[CFG] RCH saved: %u,%u\r\n",
-	                     (unsigned)g_node_cfg.rch[0],
-	                     (unsigned)g_node_cfg.rch[1]);
-	    HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)m, 50);
-	}
+	if (strncmp(tmp, "RCH=",   4) == 0) g_nodeinfo.got_mask |= GOT_RCH;
 	if (strncmp(tmp, "TXP=",   4) == 0) g_nodeinfo.got_mask |= GOT_TXP;
 	if (strncmp(tmp, "MODE=",  5) == 0) g_nodeinfo.got_mask |= GOT_MODE;
 	if (strncmp(tmp, "MAC=",   4) == 0) g_nodeinfo.got_mask |= GOT_MAC;
@@ -3983,30 +3845,18 @@ void nodeinfo_finish_fail(int8_t err)
 
 void Debug_Print_FFT_Peak(void)
 {
-    static uint32_t fft_seq = 0;
-    char b[160];
-    int n = sprintf(b, "[DBG] isr=%lu trig=%lu frame=%lu dev=%.4f thr=%.4f noise=%.4f paused=%d ready=%d\r\n",
-        (unsigned long)g_adc_isr_cnt,
-        (unsigned long)g_trig_fire_cnt,
-        (unsigned long)g_frame_ready_cnt,
-        g_last_dev, g_last_thr, g_last_noise,
-        ultra_sampling_paused ? 1 : 0,
-        ultra_frame_ready ? 1 : 0
-    );
-    HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)b, n, 20);
-    if (st != HAL_OK) uart_fail_cnt++;
     if (ultra_frame_ready && ultra_sampling_paused) {
-
-        uint32_t my_seq = ++fft_seq;
-
-        // --- 전압/전류 ---
+        // --- 전압/전류 측정 추가 ---
         VIRead vi;
         float vin_v = 0.0f;
         float i_adc_v = 0.0f;
+
+        // 시스템의 VI 측정 함수 호출 (K_ADC2V 등은 기존 정의된 상수 사용)
         if (AD_DC_Injected_Once(&vi) == HAL_OK) {
             vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-            i_adc_v = (float)vi.curr_raw * K_ADC2V;
+            i_adc_v = (float)vi.curr_raw * K_ADC2V; // K_ADC2V가 선언되어 있어야 함
         }
+        // -----------------------
 
         static float local_in[FFT_SIZE];
         float32_t outputSignal[FFT_SIZE];
@@ -4023,49 +3873,32 @@ void Debug_Print_FFT_Peak(void)
         bool found = false;
 
         for (int i = 1; i < FFT_SIZE / 2; i++) {
-            float re = outputSignal[2*i];
-            float im = outputSignal[2*i+1];
-            float mag = sqrtf(re*re + im*im);
+            float mag = sqrtf(outputSignal[2*i]*outputSignal[2*i] + outputSignal[2*i+1]*outputSignal[2*i+1]);
             float freq = (float)i * (float)SAMPLING_RATE / (float)FFT_SIZE;
 
-            if (freq >= 80000.0f && freq <= 120000.0f) {
+            if (freq >= 80000.0f && freq <= 130000.0f) {
                 if (mag > max_amp) {
                     max_amp = mag;
-                    peak_f  = freq;
-                    found   = true;
+                    peak_f = freq;
+                    found = true;
                 }
             }
         }
 
-        char buf[200];
-        int len;
-
         if (found) {
-            len = sprintf(buf,
-                "[FFT#%lu] found=1 peak=%.2fkHz amp=%.2f vin=%.2fV i=%.2fA\r\n",
-                (unsigned long)my_seq,
-                peak_f / 1000.0f,
-                max_amp,
-                vin_v,
-                i_adc_v
-            );
-        } else {
-            len = sprintf(buf,
-                "[FFT#%lu] found=0 (no peak 80-130kHz) vin=%.2fV i=%.2fA\r\n",
-                (unsigned long)my_seq,
-                vin_v,
-                i_adc_v
-            );
+            char buf[128];
+            // 출력 형식 변경: [DEBUG] SMPS: 주파수, 진폭, 전압, 전류
+            int len = sprintf(buf, "[DEBUG] SMPS: %.2f kHz, Amp: %.2f, Volt: %.2f V, Curr: %.2f A\r\n",
+                              peak_f / 1000.0f, max_amp, vin_v, i_adc_v);
+            HAL_UART_Transmit(&huart6, (uint8_t*)buf, len, 20);
         }
 
-        HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, 20);
         Ultra_ResumeNextFrame();
     }
     else if (!ultra_frame_ready && ultra_sampling_paused) {
         Ultra_ResumeNextFrame();
     }
 }
-
 
 /* void Process_Ultra_Frame_Then_VI(void)
 {

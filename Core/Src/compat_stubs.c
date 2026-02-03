@@ -12,15 +12,6 @@
 #include <string.h>
 
 /* ---------- storage_mid 관련 (지금은 사용 안 함: 플래시 접근 제거) ---------- */
-bool load_mid_from_flash(uint16_t *out_mid) {
-    if (out_mid) *out_mid = 0xFFFF;    // 미설정 의미
-    return false;                      // 플래시에서 읽지 않음
-}
-bool save_mid_to_flash(uint16_t mid) {
-    (void)mid;
-    return true;                       // 저장 안 하지만 성공한 것처럼 처리
-}
-
 /* ---------- UID 12바이트 패킹 (메인에서 참조) ---------- */
 void mid_pack_uid12(const uint32_t uid_words[3], uint8_t out12[12]) {
     // uid_words: 32비트 x3 (총 12바이트)라고 가정 → 그대로 복사

@@ -12,7 +12,6 @@ extern arm_rfft_fast_instance_f32 fftInstance;
 void processFFT(float32_t *input, float32_t *output, float32_t *magnitude) {
     arm_rfft_fast_f32(&fftInstance, input, output, 0);
     arm_cmplx_mag_f32(output, magnitude, FFT_SIZE / 2);
-
 }
 
 /*

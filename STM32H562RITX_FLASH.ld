@@ -44,8 +44,13 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 640K
-  FLASH    (rx)    : ORIGIN = 0x08000000,   LENGTH = 2048K
+  RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 640K
+
+  /* 코드/상수 올라가는 영역 (2MB - 8KB = 0x001FE000) */
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 0x001FE000
+
+  /* 맨 끝 8KB(0x081FE000~0x081FFFFF)를 설정 저장 전용 영역으로 예약 */
+  CFG    (rw)  : ORIGIN = 0x081FE000, LENGTH = 0x00002000
 }
 
 /* Sections */
