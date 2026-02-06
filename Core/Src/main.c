@@ -276,7 +276,11 @@ static AckBin_t g_nodeinfo_ack;
 #define TRIG_HOLD_SAMPLES (32u)
 #define NOISE_MIN         (0.001f)
 
-#define SAMPLING_RATE 950000.0f
+#define FFT_SNR_K  8.0f
+#define FFT_NOISE_MIN    (1e-6f)
+
+#define SAMPLING_RATE 600000.0f
+
 #define PACKET_STX    0x02
 #define PACKET_ETX    0x03
 #define SIG1          0xAA
@@ -446,7 +450,7 @@ static uint8_t           wisun_packet_shadow[PACKET_MAX_SIZE];
 static volatile uint16_t wisun_rx_need  = 0;
 static volatile uint8_t g_wait_mid_query = 0;
 volatile uint32_t g_ultra_frame_tick = 0;
-static uint8_t capturing = 0;
+//static uint8_t capturing = 0;
 
 static float ai_mse = 0.0f;
 static int ai_pred = 0;
@@ -493,10 +497,18 @@ static volatile size_t   ultra_idx = 0;
 static volatile bool     ultra_frame_ready = false;
 static volatile bool     ultra_sampling_paused = false;
 
+volatile uint32_t g_frame_c0 = 0;
+volatile uint32_t g_frame_c1 = 0;
+
 static float baseline = 0.0f;
 static float noise_level = 0.01f;  // 초기값 적당히
 static uint8_t trig_on = 0;
 static uint16_t trig_hold = 0;
+static float32_t g_hann[FFT_SIZE];
+static uint8_t g_hann_inited = 0;
+
+static volatile uint8_t  g_ai_sample_ready = 0;
+static volatile float    g_ai_sample = 0.0f;
 
 volatile uint32_t g_adc_isr_cnt = 0;
 volatile uint32_t g_trig_fire_cnt = 0;
@@ -665,9 +677,11 @@ void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n);
 void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid);
 void debug_print_boot_info(uint16_t stored_mid);
 void debug6(const char *s);
+static inline void DWT_CYCCNT_Init(void);
 static void dump_hex_uart(const uint8_t *p, uint16_t n);
 void Debug_Print_FFT_Peak(void);
-void ExtractFullFFT(FftData_t *dest);
+void ExtractFullFFT(const float32_t *in, FftData_t *dest);
+static void ExtractFullFFT_MagOnly(const float32_t *in, float32_t *mag_out);
 void Format_UID(char *msg, size_t size);
 static uint16_t find_first_zero(const uint8_t *p, uint16_t n);
 static void hop_tx_task_poll(void);
@@ -675,6 +689,7 @@ static void init_uid_string(void);
 static inline int is_night(int now, int dusk, int dawn);
 static bool is_bootstrap_cmd(uint8_t cmd);
 void Input_Ai_Model(float v);
+static void InitHannWindowOnce(void);
 uint32_t Get_Device_ID(void);
 float Get_Calibrated_Vref(void);
 float Get_Offset_Voltage(void);
@@ -1512,31 +1527,40 @@ void ADC1_Start_Regular_IN18_IT(void)
 }
 
 
-/*
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance != ADC1) return;
 
+    /* ✅ 프레임 시작 타임스탬프 */
+    if (wr_idx == 0) {
+        g_frame_c0 = DWT->CYCCNT;
+    }
 
     uint16_t raw = HAL_ADC_GetValue(hadc);
     raw_buffer[wr_idx]  = raw;
     inputSignal[wr_idx] = ((float)raw * 3.3f / 4095.0f) - 1.65f;
 
     wr_idx++;
-    if (wr_idx >= FFT_SIZE) {
-        wr_idx = 0;
 
+    if (wr_idx >= FFT_SIZE) {
+        /* ✅ 프레임 끝 타임스탬프 */
+        g_frame_c1 = DWT->CYCCNT;
+
+        wr_idx = 0;
         g_ultra_frame_tick = HAL_GetTick();
         ultra_frame_ready = true;
-
         ultra_sampling_paused = true;
-        HAL_ADC_Stop_IT(&hadc1);
+
+        (void)HAL_ADC_Stop_IT(&hadc1);
+        return;
     }
+
     if (!ultra_sampling_paused) {
-	   HAL_ADC_Start_IT(&hadc1);
+        (void)HAL_ADC_Start_IT(&hadc1);
     }
 }
-*/
+
+/*
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance != ADC1) return;
@@ -1544,7 +1568,9 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 
     uint16_t raw = HAL_ADC_GetValue(hadc);
     float x = ((float)raw * 3.3f / 4095.0f) - 1.65f;
-
+    if (wr_idx == 0) g_frame_t0 = HAL_GetTick();
+    g_ai_sample = x;
+    g_ai_sample_ready = 1;
     // 1) 캡처 중이 아니면 baseline/noise 갱신 + 트리거 검사
     if (!ultra_sampling_paused) {
 
@@ -1554,8 +1580,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
             g_last_wr  = wr_idx;
 
             if (wr_idx >= FFT_SIZE) {
+            	g_frame_t1 = HAL_GetTick();
                 wr_idx = 0;
-
                 ultra_frame_ready = true;
                 ultra_sampling_paused = true;
                 g_frame_ready_cnt++;
@@ -1567,10 +1593,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     }
     // 기존 방식 유지: single conversion을 계속 걸어야 한다면
     if (!ultra_sampling_paused) {
-        //HAL_ADC_Start_IT(&hadc1);
-    	g_adc_kick = 1;
+        HAL_ADC_Start_IT(&hadc1);
     }
 }
+*/
 
 /*
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -1893,6 +1919,7 @@ void debug6(const char *s)
     HAL_UART_Transmit(&huart6, (uint8_t*)s, strlen(s), 100);
 }
 
+/*
 static void light_force_gpio_out(void)
 {
     GPIO_InitTypeDef gi = {0};
@@ -1901,6 +1928,21 @@ static void light_force_gpio_out(void)
     gi.Pull  = GPIO_NOPULL;
     gi.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LIGHT_GPIO_Port, &gi);
+}
+*/
+
+static inline void DWT_CYCCNT_Init(void)
+{
+    /* DWT/ITM access enable */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+    /* Unlock (필요한 코어에서만) */
+    #if defined (DWT_LAR)
+    DWT->LAR = 0xC5ACCE55;
+    #endif
+
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 void reconfigure_snapshot_timer_from_cfg(void)
@@ -2243,7 +2285,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 
             if (!isfinite(mag)) mag = 0.0f;
 
-            fft_packet[i].freq      = (float)i * (float)SAMPLING_RATE / (float)FFT_SIZE;
+            fft_packet[i].freq      = (float)i * (float)FSAMPLE / (float)FFT_SIZE;
             fft_packet[i].amplitude = mag;
         }
 
@@ -2252,7 +2294,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 
         uint16_t nbins = FFT_SIZE / 2;
         for (uint16_t b = 1; b < nbins && fft_cnt < SNAP_FFT_PAIRS; ++b) {
-            float freq = (float)b * (float)SAMPLING_RATE / (float)FFT_SIZE;
+            float freq = (float)b * (float)FSAMPLE / (float)FFT_SIZE;
             float amp  = fft_packet[b].amplitude;
             if (!isfinite(amp)) amp = 0.0f;
 
@@ -2441,6 +2483,7 @@ int main(void)
   MX_RTC_Init();
   MX_ADC2_Init();
   MX_X_CUBE_AI_Init();
+  DWT_CYCCNT_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart1, &rxByte1, 1);
   HAL_UART_Receive_IT(&huart6, &rxByte, 1);
@@ -2506,8 +2549,8 @@ int main(void)
 	   my_mid,  g_node_cfg.rch[0], g_node_cfg.rch[1], g_node_cfg.mid_assigned,
 	   (mid_loaded && stored_mid != MID_INVALID && stored_mid != 0) ? "flash" : "wisun");
 
-    static uint32_t ai_last_infer_tick = 0;
-    static int      g_ai_last_result   = 0;
+    //static uint32_t ai_last_infer_tick = 0;
+    //static int      g_ai_last_result   = 0;
     light_on();
   /* USER CODE END 2 */
 
@@ -2518,25 +2561,25 @@ int main(void)
         uint32_t now = HAL_GetTick();
 
         boot_poll();
-        hop_tx_task_poll();
+        /*hop_tx_task_poll();
         resp_slot_task_poll();
         scheduler_poll();
-        wisun_process_rx_mainloop();
+        wisun_process_rx_mainloop();*/
 
         /* Debug FFT */
-        /*
-        if (g_adc_kick && !ultra_sampling_paused) {
+
+        /*if (g_adc_kick && !ultra_sampling_paused) {
             g_adc_kick = 0;
             (void)HAL_ADC_Start_IT(&hadc1);
-        }
+        }*/
 
         if (ultra_sampling_paused) {
             Debug_Print_FFT_Peak(); // ready 여부는 함수가 판단
         }
-        */
+
 
         /* ===================== Wi-SUN RX ===================== */
-        if (wisun_packet_ready)
+        /*if (wisun_packet_ready)
         {
             __disable_irq();
 
@@ -2555,7 +2598,7 @@ int main(void)
                 g_last_rx_tmid = v.tmid;
                 uint16_t src_mid = v.tmid;
 
-                /* 최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7B */
+                 최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7B
                 if (v.data_len >= 7)
                 {
                     uint16_t target_mid =
@@ -2583,7 +2626,7 @@ int main(void)
             }
         }
 
-        /* ===================== AT RX ===================== */
+         ===================== AT RX =====================
         if (g_at_line_ready)
         {
             //HAL_UART_Transmit(&huart6, (uint8_t *)"[AT_LINE_READY]\r\n", 15, 50);
@@ -2615,7 +2658,7 @@ int main(void)
     #endif
         }
 
-        /* ===================== Node Info ===================== */
+         ===================== Node Info =====================
         nodeinfo_poll(now);
 
         if (g_snap_enable && node_is_provisioned())
@@ -2628,7 +2671,7 @@ int main(void)
             }
         }
 
-        /* ===================== RTC / SUN ===================== */
+         ===================== RTC / SUN =====================
         rtc_update();
         update_sun_times();
 
@@ -2649,26 +2692,30 @@ int main(void)
                 g_dawn_min / 60, g_dawn_min % 60,
                 g_dusk_min / 60, g_dusk_min % 60
             );
-        }
+        }*/
 
         /* ===================== AI ===================== */
-        static uint8_t forced = 0;
-        if (!forced && HAL_GetTick() > 3000)
+        //static uint8_t forced = 0;
+       /* if (!forced && HAL_GetTick() > 3000)
         {
             forced = 1;
             ai_pending = 1;
             ai_index = AE_COLS;
             uart6_log("[AI] forced pending=1\r\n");
-        }
+        }*/
 
-        static uint32_t hb_t = 0;
+        /*static uint32_t hb_t = 0;
         static uint32_t ai_feed_tick = 0;
         now = HAL_GetTick();
 
-        if (!ai_pending && now - ai_feed_tick >= 10)
+        if (!ai_pending && g_ai_sample_ready)
         {
-        	ai_feed_tick = now;
-        	Input_Ai_Model(ai_v);
+            __disable_irq();
+            float x = g_ai_sample;
+            g_ai_sample_ready = 0;
+            __enable_irq();
+
+            Input_Ai_Model(x);
         }
         if (now - hb_t >= 1000) {
           hb_t = now;
@@ -2678,7 +2725,7 @@ int main(void)
          }
         if (ai_pending) {
             ai_service();
-        }
+        }*/
     }
   /* USER CODE END 3 */
 }
@@ -3244,7 +3291,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static void ai_service(void)
+/*static void ai_service(void)
 {
     if (!ai_pending) return;
 
@@ -3270,6 +3317,50 @@ static void ai_service(void)
         ai_next_run = now + ai_period_ms;
         return;   // ⭐ 여기서 반드시 탈출
     }
+}*/
+static void ai_service(void)
+{
+    if (!ai_pending) return;
+
+    uint32_t now = HAL_GetTick();
+
+    if ((int32_t)(now - ai_next_run) < 0) return;
+    if (wisun_packet_ready || g_at_line_ready) return;
+
+    uint32_t t0 = HAL_GetTick();
+    int r = run_inference(ai_input, &ai_mse, &ai_pred);
+    uint32_t dt = HAL_GetTick() - t0;
+
+    if (r != 0)
+    {
+        char err[64];
+        int n = snprintf(err, sizeof(err),
+                         "AI run ERR=%d dt=%lu ms\r\n",
+                         r, (unsigned long)dt);
+        HAL_UART_Transmit(&huart6, (uint8_t*)err, n, 50);
+
+        // ❗ 에러일 때도 다음 샘플링이 다시 시작되도록 리셋
+        ai_pending = 0;
+        ai_index = 0;
+        ai_next_run = now + ai_period_ms;
+        return;
+    }
+
+    // ✅ 성공 케이스 처리 (이게 없어서 pending이 계속 1이었던 것)
+    {
+        char ok[96];
+        int n = snprintf(ok, sizeof(ok),
+                         "AI OK dt=%lu ms mse=%.6f pred=%d\r\n",
+                         (unsigned long)dt, (double)ai_mse, ai_pred);
+        HAL_UART_Transmit(&huart6, (uint8_t*)ok, n, 50);
+
+    }
+
+    ai_pending = 0;                 // 다음 샘플 채우기 허용
+    ai_index = 0;
+    uart6_log("[AI] done idx=%u pending=%u\r\n",
+                      (unsigned)ai_index, (unsigned)ai_pending);
+    ai_next_run = now + ai_period_ms; // 주기 제한
 }
 
 static void push_snapshot(bool light_on,
@@ -3639,29 +3730,58 @@ void startADCInterrupt(void) {
     HAL_ADC_Start_IT(&hadc1);
 }
 
-void ExtractFullFFT(FftData_t *dest) {
-    // DC Offset 제거
+static void InitHannWindowOnce(void)
+{
+    if (g_hann_inited) return;
+    for (int i = 0; i < FFT_SIZE; i++) {
+        g_hann[i] = 0.5f - 0.5f * arm_cos_f32(2.0f * 3.14159265f * (float)i / (float)(FFT_SIZE - 1));
+    }
+    g_hann_inited = 1;
+}
+
+void ExtractFullFFT(const float32_t *in, FftData_t *dest) {
+	InitHannWindowOnce();
+
+	// 1) local 작업 버퍼
+	static float32_t xw[FFT_SIZE];
+
+	// 2) DC 제거용 평균
+	float32_t mean = 0.0f;
+	for (int i = 0; i < FFT_SIZE; i++) mean += in[i];
+	mean /= (float32_t)FFT_SIZE;
+
+	// 3) DC 제거 + 윈도우 적용
+	for (int i = 0; i < FFT_SIZE; i++) {
+		xw[i] = (in[i] - mean) * g_hann[i];
+	}
+
+	// 4) FFT 수행 (너의 processFFT가 xw를 입력으로 받도록)
+	processFFT(xw, outputSignal, magnitude);
+
+	// 5) 결과 저장 (0~Nyquist: FFT_SIZE/2)
+	for (int i = 0; i < FFT_SIZE / 2; i++) {
+		float freq = ((float)i * (float)FSAMPLE) / (float)FFT_SIZE;
+		dest[i].freq = freq;            // ⚠️ FftData_t.freq는 float이어야 함
+		dest[i].amplitude = magnitude[i];
+	}
+}
+
+static void ExtractFullFFT_MagOnly(const float32_t *in, float32_t *mag_out)
+{
+    InitHannWindowOnce();
+
+    static float32_t xw[FFT_SIZE];
+    static float32_t out[FFT_SIZE];
+
     float32_t mean = 0.0f;
-    int max_bin = FFT_SIZE / 2;
-    for (int i = 0; i < FFT_SIZE; i++) mean += inputSignal[i];
-    mean /= FFT_SIZE;
-    for (int i = 0; i < FFT_SIZE; i++) inputSignal[i] -= mean;
+    for (int i = 0; i < FFT_SIZE; i++) mean += in[i];
+    mean /= (float32_t)FFT_SIZE;
 
-    // FFT 수행
-    processFFT(inputSignal, outputSignal, magnitude);
+    for (int i = 0; i < FFT_SIZE; i++) {
+        xw[i] = (in[i] - mean) * g_hann[i];
+    }
 
-    // 결과 저장
-    /*for (int i = 0; i < FFT_SIZE / 2; i++) {  // ✅ 중요: FFT_SIZE / 2 만큼만 저장해야 함
-        dest[i].freq = (uint16_t)((i * SAMPLING_RATE) / FFT_SIZE);
-        dest[i].amplitude = magnitude[i];
-    }*/
-    for (int i = 0; i < FFT_SIZE / 2; i++) {
-            float freq = (float)(i * SAMPLING_RATE) / FFT_SIZE;
-            if (freq > SAMPLING_RATE / 2.0f) break;
-
-            dest[i].freq = freq;
-            dest[i].amplitude = magnitude[i]; /*/ (FFT_SIZE / 2);*/  // ✅ 여기서 보정 적용
-        }
+    processFFT(xw, out, mag_out);
 }
 
 static void scheduler_poll(void)
@@ -3984,87 +4104,270 @@ void nodeinfo_finish_fail(int8_t err)
 void Debug_Print_FFT_Peak(void)
 {
     static uint32_t fft_seq = 0;
-    char b[160];
-    int n = sprintf(b, "[DBG] isr=%lu trig=%lu frame=%lu dev=%.4f thr=%.4f noise=%.4f paused=%d ready=%d\r\n",
-        (unsigned long)g_adc_isr_cnt,
-        (unsigned long)g_trig_fire_cnt,
-        (unsigned long)g_frame_ready_cnt,
-        g_last_dev, g_last_thr, g_last_noise,
-        ultra_sampling_paused ? 1 : 0,
-        ultra_frame_ready ? 1 : 0
-    );
-    HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)b, n, 20);
-    if (st != HAL_OK) uart_fail_cnt++;
+    static uint32_t dbg_t = 0;
+
+    /* 상태 로그 (매 호출 출력) */
+    /*{
+        char b[180];
+        int n = snprintf(b, sizeof(b),
+            "[DBG] isr=%lu trig=%lu frame=%lu dev=%.4f thr=%.4f noise=%.4f paused=%d ready=%d\r\n",
+            (unsigned long)g_adc_isr_cnt,
+            (unsigned long)g_trig_fire_cnt,
+            (unsigned long)g_frame_ready_cnt,
+            (double)g_last_dev, (double)g_last_thr, (double)g_last_noise,
+            ultra_sampling_paused ? 1 : 0,
+            ultra_frame_ready ? 1 : 0
+        );
+
+        HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)b, (uint16_t)n, 20);
+        if (st != HAL_OK) uart_fail_cnt++;
+    }*/
+
+    /* 프레임 준비되었고 샘플링 멈춘 상태면 FFT 수행 */
     if (ultra_frame_ready && ultra_sampling_paused) {
+
+        /* ✅ Hann 테이블 보장 초기화 */
+        InitHannWindowOnce();
 
         uint32_t my_seq = ++fft_seq;
 
-        // --- 전압/전류 ---
-        VIRead vi;
+        /* ---- 전압/전류 ---- */
         float vin_v = 0.0f;
         float i_adc_v = 0.0f;
-        if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-            vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-            i_adc_v = (float)vi.curr_raw * K_ADC2V;
-        }
-
-        static float local_in[FFT_SIZE];
-        float32_t outputSignal[FFT_SIZE];
-
-        __disable_irq();
-        for (int i = 0; i < FFT_SIZE; ++i) local_in[i] = inputSignal[i];
-        ultra_frame_ready = false;
-        __enable_irq();
-
-        arm_rfft_fast_f32(&fftInstance, local_in, outputSignal, 0);
-
-        float max_amp = -1.0f;
-        float peak_f  = 0.0f;
-        bool found = false;
-
-        for (int i = 1; i < FFT_SIZE / 2; i++) {
-            float re = outputSignal[2*i];
-            float im = outputSignal[2*i+1];
-            float mag = sqrtf(re*re + im*im);
-            float freq = (float)i * (float)SAMPLING_RATE / (float)FFT_SIZE;
-
-            if (freq >= 80000.0f && freq <= 120000.0f) {
-                if (mag > max_amp) {
-                    max_amp = mag;
-                    peak_f  = freq;
-                    found   = true;
-                }
+        {
+            VIRead vi;
+            if (AD_DC_Injected_Once(&vi) == HAL_OK) {
+                vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
+                i_adc_v = (float)vi.curr_raw * K_ADC2V;
             }
         }
 
-        char buf[200];
-        int len;
+        /* ---- 입력 안전 복사 ---- */
+        static float32_t x[FFT_SIZE];
+        __disable_irq();
+        for (int i = 0; i < FFT_SIZE; i++) {
+            x[i] = inputSignal[i];
+        }
+        ultra_frame_ready = false;
+        __enable_irq();
 
-        if (found) {
-            len = sprintf(buf,
-                "[FFT#%lu] found=1 peak=%.2fkHz amp=%.2f vin=%.2fV i=%.2fA\r\n",
-                (unsigned long)my_seq,
-                peak_f / 1000.0f,
-                max_amp,
-                vin_v,
-                i_adc_v
-            );
-        } else {
-            len = sprintf(buf,
-                "[FFT#%lu] found=0 (no peak 80-130kHz) vin=%.2fV i=%.2fA\r\n",
-                (unsigned long)my_seq,
-                vin_v,
-                i_adc_v
-            );
+        uint32_t c0 = g_frame_c0;
+        uint32_t c1 = g_frame_c1;
+        uint32_t dc = (c1 >= c0) ? (c1 - c0) : (0xFFFFFFFFu - c0 + c1 + 1u);
+
+        float dt_s  = (float)dc / (float)SystemCoreClock;
+        float dt_ms = dt_s * 1000.0f;
+        float fs_eff = (dt_s > 1e-9f) ? ((float)FFT_SIZE / dt_s) : 0.0f;
+
+        // ---- Zero-crossing 주파수 추정 ----
+        /*int zc = 0;
+        for (int i = 1; i < FFT_SIZE; i++) {
+            float a = x[i-1];
+            float b = x[i];
+            if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f)) zc++;
+        }
+        float f_zc = 0.0f;
+        if (fs_eff > 1.0f) {
+            // crossing 2회 = 1주기 가정
+            f_zc = ((float)zc * 0.5f) * (fs_eff / (float)FFT_SIZE);
         }
 
-        HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, 20);
+        char b[160];
+        int n = snprintf(b, sizeof(b),
+            "[RAWCHK] dt=%.2fms fs_eff=%.1fHz zc=%d f_zc=%.1fkHz\r\n",
+            (double)dt_ms, (double)fs_eff, zc, (double)(f_zc/1000.0f));
+        HAL_UART_Transmit(&huart6, (uint8_t*)b, (uint16_t)n, 20);*/
+
+
+        /* ---- 1초에 1번 입력 상태 체크 ---- */
+        uint32_t now = HAL_GetTick();
+        if ((now - dbg_t) >= 1000u) {
+            dbg_t = now;
+            float mn = 1e9f, mx = -1e9f;
+            for (int i = 0; i < FFT_SIZE; i++) {
+                if (x[i] < mn) mn = x[i];
+                if (x[i] > mx) mx = x[i];
+            }
+            char tbuf[120];
+			int tn = snprintf(tbuf, sizeof(tbuf),
+				"[IN] min=%.6f max=%.6f p2p=%.6f\r\n",
+				(double)mn, (double)mx, (double)(mx - mn)
+			);
+
+			if (tn < 0) tn = 0;
+			if (tn > (int)sizeof(tbuf)) tn = (int)sizeof(tbuf);
+
+			HAL_StatusTypeDef st2 = HAL_UART_Transmit(&huart6, (uint8_t*)tbuf, (uint16_t)tn, 20);
+			if (st2 != HAL_OK) uart_fail_cnt++;
+        }
+
+        /* ---- FFT -> magnitude (✅ ExtractFullFFT 적용) ---- */
+        static float32_t mag[FFT_SIZE/2];
+        ExtractFullFFT_MagOnly(x, mag);
+
+        /* ---- 대역 (원하는 값으로) ---- */
+        const float lo_hz = 80000.0f;
+        const float hi_hz = 115000.0f;
+
+        float fs  = (fs_eff > 1.0f) ? fs_eff : (float)FSAMPLE;
+        float nyq = 0.5f * fs;
+
+        float lo = lo_hz;
+        float hi = hi_hz;
+
+        /* nyquist 넘어가면 잘라내기 + 끝 bin 가드 */
+        const float guard = 3000.0f;          // 3kHz (원하면 5k)
+        if (hi > nyq - guard) hi = nyq - guard;
+        if (lo < 1.0f) lo = 1.0f;
+
+        if (lo >= hi) {
+            char buf[160];
+            int len = snprintf(buf, sizeof(buf),
+                "[FFT#%lu] fs=%.1fk nyq=%.1fk lo/hi invalid (lo=%.1fk hi=%.1fk)\r\n",
+                (unsigned long)my_seq,
+                (double)(fs/1000.0f), (double)(nyq/1000.0f),
+                (double)(lo/1000.0f), (double)(hi/1000.0f));
+            HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, 20);
+            Ultra_ResumeNextFrame();
+            return;
+        }
+
+        /* ---- 대역 스캔 + noise_floor(trimmed mean) ---- */
+        float max_amp = 0.0f;
+        float peak_f  = 0.0f;
+
+        float sum = 0.0f;
+        int   cnt = 0;
+        float top1 = 0.0f, top2 = 0.0f, top3 = 0.0f;
+        int peak_i = -1;
+        for (int i = 1; i < (FFT_SIZE/2); i++) {
+        	float freq = ((float)i * fs) / (float)FFT_SIZE;
+        	if (freq < lo || freq > hi) continue;
+
+            float a = mag[i];
+
+            if (a > max_amp) {
+                max_amp = a;
+                peak_f  = freq;
+                peak_i  = i;
+            }
+
+            sum += a;
+            cnt++;
+
+            if (a > top1) { top3 = top2; top2 = top1; top1 = a; }
+            else if (a > top2) { top3 = top2; top2 = a; }
+            else if (a > top3) { top3 = a; }
+        }
+
+        if (peak_i >= 2 && peak_i <= (FFT_SIZE/2 - 2)) {
+            float a0 = mag[peak_i - 1];
+            float a1 = mag[peak_i];
+            float a2 = mag[peak_i + 1];
+
+            /* 에너지 합산(루트-제곱합) */
+            float a_rss = sqrtf(a0*a0 + a1*a1 + a2*a2);
+
+            max_amp = a_rss;
+        }
+
+        float noise_floor = 0.0f;
+        if (cnt > 0) {
+            float trimmed = sum - (top1 + top2 + top3);
+            int trimmed_cnt = cnt - 3;
+            if (trimmed_cnt < 1) { trimmed = sum; trimmed_cnt = cnt; }
+            noise_floor = trimmed / (float)trimmed_cnt;
+        }
+        if (noise_floor < NOISE_MIN) noise_floor = NOISE_MIN;
+
+        const float N  = (float)FFT_SIZE;
+        const float CG = 0.5f;                 // Hann coherent gain(근사)
+
+        /* FFT magnitude -> 전압 진폭(기본파) */
+        float vpk  = (2.0f / (N * CG)) * max_amp;   // ≈ (4/N)*max_amp
+        float mvpk = vpk * 1000.0f;
+
+        float vpp  = 2.0f * vpk;
+        float mvpp = vpp * 1000.0f;
+
+        float vrms = vpk * 0.70710678f;         // = vpk/sqrt(2)
+
+        /* ---- (옵션) ADC counts 환산 (FFT 기반) ---- */
+        float adc_pk  = vpk * (4095.0f / 3.3f);
+        float adc_pp  = vpp * (4095.0f / 3.3f);
+
+        float snr = (noise_floor > 0.0f) ? (max_amp / noise_floor) : 0.0f;
+        bool found = (cnt > 0) && (snr > FFT_SNR_K);
+        //bool found = (cnt > 0) && (max_amp > (noise_floor * FFT_SNR_K));
+
+        /* ---- 결과 출력(예전 스타일) ---- */
+        {
+            char buf[220];
+            int len;
+
+            if (found) {
+            	len = snprintf(buf, sizeof(buf),
+            	  "[FFT#%lu] found=%d peak=%.2fkHz "
+            	  "vpk=%.4fV mvpk=%.1f "
+            	  "vpp=%.4fV mvpp=%.1f "
+            	  "vrms=%.4fV "
+            	  "adc_pk=%.1f adc_pp=%.1f "
+            	  "dt=%.2fms fs_eff=%.1fk "
+				  "fs=%.1fk nyq=%.1fk lo=%.1fk hi=%.1fk snr=%.2f "
+				  "vin=%.2fV i=%.2fA\r\n",
+            	  (unsigned long)my_seq,
+            	  found ? 1 : 0,
+            	  (double)(peak_f/1000.0f),
+            	  (double)vpk, (double)mvpk,
+            	  (double)vpp, (double)mvpp,
+            	  (double)vrms,
+            	  (double)adc_pk, (double)adc_pp,
+				  (double)dt_ms,  (double)(fs_eff/1000.0f),
+				  (double)(fs/1000.0f),
+				  (double)(nyq/1000.0f),
+			      (double)(lo/1000.0f),
+			      (double)(hi/1000.0f),
+			      (double)snr,
+            	  (double)vin_v, (double)i_adc_v
+            	);
+            } else {
+            	len = snprintf(buf, sizeof(buf),
+            	    "[FFT#%lu] found=0 peak=%.2fkHz "
+            	    "max=%.3g nf=%.3g snr=%.2f cnt=%d "
+            	    "dt=%.2fms fs_eff=%.1fk fs=%.1fk nyq=%.1fk "
+            	    "lo=%.1fk hi=%.1fk "
+            	    "vin=%.2fV i=%.2fA\r\n",
+            	    (unsigned long)my_seq,
+            	    (double)(peak_f/1000.0f),
+            	    (double)max_amp,
+            	    (double)noise_floor,
+            	    (double)snr,
+            	    cnt,
+            	    (double)dt_ms,
+            	    (double)(fs_eff/1000.0f),
+            	    (double)(fs/1000.0f),
+            	    (double)(nyq/1000.0f),
+            	    (double)(lo/1000.0f),
+            	    (double)(hi/1000.0f),
+            	    (double)vin_v,
+            	    (double)i_adc_v
+            	);
+            }
+
+            HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, 20);
+            if (st != HAL_OK) uart_fail_cnt++;
+        }
+
+        /* ✅ 네가 원래 쓰던 구조 그대로 */
         Ultra_ResumeNextFrame();
     }
     else if (!ultra_frame_ready && ultra_sampling_paused) {
+        /* 멈췄는데 frame_ready가 아닌 이상 상태면 그냥 재개 */
         Ultra_ResumeNextFrame();
     }
 }
+
+
 
 
 /* void Process_Ultra_Frame_Then_VI(void)
