@@ -8,7 +8,7 @@
 #include "arm_const_structs.h"
 
 #define FFT_SIZE 4096  // FFT 크기 정의
-#define FSAMPLE   400000.0f
+#define FSAMPLE   600000.0f
 //define CYCLE_SAMPS  ((int)(FSAMPLE/F_ULTRA))
 #define N_CYCLES     10
 

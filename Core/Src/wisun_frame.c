@@ -86,9 +86,7 @@ bool wisun_parse_frame(const uint8_t *buf, size_t len, wisun_frame_view_t *out)
     uint16_t ck_pos_B  = (uint16_t)(6u + dl);
     uint16_t etx_pos_B = (uint16_t)(ck_pos_B + 1u);
     uint16_t need_B    = (uint16_t)(etx_pos_B + 1u);
-
     bool use_B = false;
-
     if (len >= need_A && buf[etx_pos_A] == 0x03) {
         // CK 범위는 SIG1~...~MID(2)+meta(10)+DATA(dl)
         uint16_t ck_len_A = (uint16_t)(2u + 1u + 2u + meta_len + dl);
