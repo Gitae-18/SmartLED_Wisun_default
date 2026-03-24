@@ -231,6 +231,7 @@ static AckBin_t g_nodeinfo_ack;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define DEBUG_AT_TO_PC
 #define RX_BUFFER_SIZE 100
 #define PACKET_MAX_SIZE 256
 #define HOP_QUEUE_SIZE   16   // 필요하면 4~8 정도로
@@ -688,7 +689,7 @@ void debug_print_boot_info(uint16_t stored_mid);
 void debug6(const char *s);
 static inline void DWT_CYCCNT_Init(void);
 void Debug_Print_FFT_Peak(void);
-void ExtractFullFFT(const float32_t *in, FftData_t *dest);
+void ExtractFullFFT(const float32_t *in, float fs_hz, FftData_t *dest);
 static void ExtractFullFFT_MagOnly(const float32_t *in, float32_t *mag_out);
 void Format_UID(char *msg, size_t size);
 static uint16_t find_first_zero(const uint8_t *p, uint16_t n);
@@ -725,7 +726,6 @@ static int norm_min(int t);
 void Parse_AT_Response(const char* buffer);
 void PrintReceivedPacket(const char* prefix, const uint8_t* data, uint16_t length);
 void Print_Voltage_Current(void);
-void Print_FFT_Summary(uint16_t *raw_buf);
 static inline void PA12_toggle_soft(void);
 static void push_snapshot(bool light_on, float voltage, float current, float temp, float supersonic);
 static int parse_hex8(const char *s, uint8_t out[8]);
@@ -985,15 +985,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 		            if (rxByte1 == PACKET_ETX && wisun_rx_index >= 7) {
 		                uint16_t packet_len = wisun_rx_index;
-
-		                // ✅ ISR에서는 "완성 프레임"만 shadow로 넘기고 끝
+		                
 		                if (packet_len <= PACKET_MAX_SIZE) {
 		                    memcpy((void*)wisun_packet_shadow, wisun_rx_buffer, packet_len);
 		                    wisun_packet_len   = packet_len;
 		                    wisun_packet_ready = true;
 		                }
 
-		                // ✅ 상태 리셋 (memset은 굳이 필요 없음)
 		                wisun_rx_index = 0;
 		                packet_state = WAITING_FOR_STX;
 		            }
@@ -1289,7 +1287,7 @@ static void handle_binary_cmd(uint8_t cmd,
                 }
 
                 schedule_resp_with_slot(
-                    RESP_KIND_RAW_BIN,   // ✅ 중요
+                    RESP_KIND_RAW_BIN,   
                     tmid,
                     msg_id,
                     (uint8_t*)&st,
@@ -1365,7 +1363,7 @@ static void handle_binary_cmd(uint8_t cmd,
                 resp.msg_id = msg_id;
                 resp.ok     = 1;
 
-                // ✅ Flash/설정(cfg)에서 오는 값
+                //Flash/설정(cfg)에서 오는 값
                 resp.mid  = g_node_cfg.mid;
                 resp.mode = g_node_cfg.mode;
 
@@ -1373,14 +1371,13 @@ static void handle_binary_cmd(uint8_t cmd,
                 resp.rch0 = g_node_cfg.rch[0];
                 resp.rch1 = g_node_cfg.rch[1]; // N/A (cfg가 1채널이라면)
 
-                // ✅ 장치/모듈 정보(info cache)에서 오는 값
+                // 장치/모듈 정보(info cache)에서 오는 값
                 resp.gid  = g_node_info.gid;
                 resp.dev  = g_node_info.dev;
                 resp.dsp  = g_node_info.dsp;
                 resp.txp  = g_node_info.txp;
                 memcpy(resp.mac, g_node_info.mac, 8);
-
-                // ✅ FW 버전
+                
                 resp.fw_major = (uint16_t)FW_MAJOR;
                 resp.fw_minor = (uint16_t)FW_MINOR;
 
@@ -1862,21 +1859,6 @@ void tx_task_poll(void)
     send_resp_now_from_task();
 }
 
-void Print_FFT_Summary(uint16_t *raw_buf)
-{
-    char msg[96];
-    const int step = 16; // ✅ 출력 줄 수 줄이기(테스트 후 조절)
-
-    for (int i = 1; i < FFT_SIZE/2; i += step) {
-    	int len = snprintf(msg, sizeof(msg),
-    	                           "%.1f, %.5f, %.u\r\n",
-    	                           fft_packet[i].freq,
-    	                           fft_packet[i].amplitude,
-    	                           raw_buf[i]);
-		HAL_UART_Transmit(&huart6, (uint8_t*)msg, len, 10);
-    }
-}
-
 void debug6(const char *s)
 {
     HAL_UART_Transmit(&huart6, (uint8_t*)s, strlen(s), 100);
@@ -2100,7 +2082,7 @@ void wisun_process_rx_mainloop(void)
         // ───── 나(or 브로드캐스트)용 ─────
         dbg_dump_uart6_with_tag("[RX_FOR_ME]", buf, packet_len);
 
-        // ✅ 여기서 "기존 for-me 처리"를 실행하면 됨.
+        // 여기서 "기존 for-me 처리"를 실행하면 됨.
         // 가장 중요한 포인트: 응답은 src_mid(보낸놈)으로 해야 함.
         //
         // handle_binary_cmd()가 "tmid=응답대상"을 받는 형태라면 src_mid를 넘겨.
@@ -2110,7 +2092,7 @@ void wisun_process_rx_mainloop(void)
             cmd,
             flags,
             msg_id,
-            src_mid,       // ✅ 응답 대상은 src_mid (게이트웨이/직전 홉)
+            src_mid,       // 응답 대상은 src_mid (게이트웨이/직전 홉)
             v.data,
             v.data_len
         );
@@ -2244,21 +2226,16 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     float   supersonic_val = 0.0f;
 
     {
-        static float local_in[FFT_SIZE];
+        static float32_t local_in[FFT_SIZE];
 
-        /* DMA가 채운 inputSignal을 안전하게 복사 */
         __disable_irq();
         for (int i = 0; i < FFT_SIZE; ++i) {
-            local_in[i] = inputSignal[i];
+            uint16_t raw = raw_buffer[i];
+            local_in[i] = ((float32_t)raw * 3.3f / 4095.0f) - 1.65f;
         }
         __enable_irq();
 
-        /* FFT 입력 버퍼 세팅 */
-        for (int i = 0; i < FFT_SIZE; ++i) {
-            inputSignal[i] = local_in[i];
-        }
-
-        arm_rfft_fast_f32(&fftInstance, inputSignal, outputSignal, 0);
+        arm_rfft_fast_f32(&fftInstance, local_in, outputSignal, 0);
 
         for (int i = 0; i < FFT_SIZE / 2; ++i) {
             float real = outputSignal[2 * i];
@@ -2596,7 +2573,7 @@ int main(void)
 	                 g_last_rx_tmid = v.tmid;
 	                 uint16_t src_mid = v.tmid;
 
-	                  //최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7B
+	                //최소: target_mid(2) + ttl(1) + cmd(1) + flags(1) + msg_id(2) = 7B
 	                 if (v.data_len >= 7)
 	                 {
 	                     uint16_t target_mid =
@@ -2650,10 +2627,10 @@ int main(void)
 
 	             Parse_AT_Response(line_local);
 
-	     #ifdef DEBUG_AT_TO_PC
+	        #ifdef DEBUG_AT_TO_PC
 	             HAL_UART_Transmit(&huart6, (uint8_t *)line_local, line_len, 50);
 	             HAL_UART_Transmit(&huart6, (uint8_t *)"\r\n", 2, 50);
-	     #endif
+	        #endif
 	         }
 
 	         // ===================== Node Info =====================
@@ -3403,14 +3380,13 @@ static void ai_service(void)
                          r, (unsigned long)dt);
         HAL_UART_Transmit(&huart6, (uint8_t*)err, n, 50);
 
-        // ❗ 에러일 때도 다음 샘플링이 다시 시작되도록 리셋
+        //에러일 때도 다음 샘플링이 다시 시작되도록 리셋
         ai_pending = 0;
         ai_index = 0;
         ai_next_run = now + ai_period_ms;
         return;
     }
-
-    // ✅ 성공 케이스 처리 (이게 없어서 pending이 계속 1이었던 것)
+    
     {
         char ok[96];
         int n = snprintf(ok, sizeof(ok),
@@ -3797,7 +3773,7 @@ static void InitHannWindowOnce(void)
     g_hann_inited = 1;
 }
 
-void ExtractFullFFT(const float32_t *in, FftData_t *dest) {
+void ExtractFullFFT(const float32_t *in, float fs_hz, FftData_t *dest) {
 	InitHannWindowOnce();
 
 	// 1) local 작업 버퍼
@@ -3818,7 +3794,7 @@ void ExtractFullFFT(const float32_t *in, FftData_t *dest) {
 
 	// 5) 결과 저장 (0~Nyquist: FFT_SIZE/2)
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		float freq = ((float)i * (float)FSAMPLE) / (float)FFT_SIZE;
+		float freq = ((float)i * fs_hz) / (float)FFT_SIZE;
 		dest[i].freq = freq;            // ⚠️ FftData_t.freq는 float이어야 함
 		dest[i].amplitude = magnitude[i];
 	}
@@ -3898,10 +3874,10 @@ void Parse_AT_Response(const char* buffer)
     snprintf(dbg, sizeof(dbg), "[AT] wait=%u line=%s\r\n", g_wait_mid_query, buffer);
     //HAL_UART_Transmit(&huart6, (uint8_t*)dbg, strlen(dbg), 50);
 
-    // ✅ MID?를 보낸 경우에만 MID 라인 처리
+    // MID?를 보낸 경우에만 MID 라인 처리
     if (!g_wait_mid_query) return;
 
-    // ✅ 라인 시작이 AT+MID= 인 경우만
+    // 라인 시작이 AT+MID= 인 경우만
     if (strncmp(buffer, "AT+MID=", 7) == 0) {
         int mid = atoi(buffer + 7);
         if (mid >= 0 && mid <= 65535) {
@@ -3971,7 +3947,7 @@ void Ultra_StartDmaFrame(void)
     (void)HAL_ADC_Stop(&hadc1);
     (void)HAL_TIM_Base_Stop(&htim6);
 
-    // DMA 캡쳐 시작 (FFT_SIZE 개)  ✅ Start_DMA는 "한 번만"
+    // DMA 캡쳐 시작 (FFT_SIZE 개) Start_DMA는 "한 번만"
     HAL_StatusTypeDef st = HAL_ADC_Start_DMA(&hadc1, (uint32_t*)raw_buffer, FFT_SIZE);
     if (st != HAL_OK) {
         ultra_sampling_paused = true;
@@ -4116,7 +4092,7 @@ void nodeinfo_collect_line(const char *line)
         return;
     }
     nodeinfo_cache_update_from_kv(tmp);
-    // ✅ FWVER 라인 들어오면 여기서 “완료”로 끝내기
+    
     if (strstr(tmp, "FWVER=") != NULL) {
     	g_node_info.valid = 1;
         nodeinfo_finish_ok();
@@ -4192,11 +4168,11 @@ void nodeinfo_finish_fail(int8_t err)
 void Debug_Print_FFT_Peak(void)
 {
 
-    /*if (!ultra_frame_ready) return;   // ✅ 프레임 준비 안 됐으면 나감
+    /*if (!ultra_frame_ready) return;   // 프레임 준비 안 됐으면 나감
         ultra_frame_ready = 0;*/
         static uint32_t fft_seq = 0;
 		static uint32_t dbg_t = 0;
-        /* ✅ Hann 테이블 보장 초기화 */
+        
         InitHannWindowOnce();
 
         uint32_t my_seq = ++fft_seq;
@@ -4276,7 +4252,7 @@ void Debug_Print_FFT_Peak(void)
 			if (st2 != HAL_OK) uart_fail_cnt++;
         }
 
-        /* ---- FFT -> magnitude (✅ ExtractFullFFT 적용) ---- */
+        /* ---- FFT -> magnitude (ExtractFullFFT 적용) ---- */
         static float32_t mag[FFT_SIZE/2];
         ExtractFullFFT_MagOnly(x, mag);
 
@@ -4464,45 +4440,10 @@ void Debug_Print_FFT_Peak(void)
             HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, tmo);
             if (st != HAL_OK) uart_fail_cnt++;
         }
-
-        /* ✅ 네가 원래 쓰던 구조 그대로 */
+        
         Ultra_StartDmaFrame();
 }
 
-
-
-
-/* void Process_Ultra_Frame_Then_VI(void)
-{
-    if (!ultra_frame_ready || !ultra_sampling_paused) return;
-    static uint16_t local_raw[FFT_SIZE];
-    static float    local_in [FFT_SIZE];
-    __disable_irq();
-    ultra_frame_ready = false;
-    for (int i=0; i<FFT_SIZE; ++i) { local_raw[i] = raw_buffer[i]; local_in[i] = inputSignal[i]; }
-    __enable_irq();
-
-    VIRead vi;
-    if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-        // --- 변환: 가장 단순 버전 ---
-        float vin_v     = (float)vi.volt_raw * (3.3f / 4095.0f);
-        float i_adc = (float)vi.curr_raw * K_ADC2V;
-
-        // 간단 출력 (짧은 포맷)
-        char m[96];
-        int n = snprintf(m, sizeof(m),
-                         "VI: %u,%u => %.3f V, %.3f A @ %luus\r\n",
-                         vi.volt_raw, vi.curr_raw, vin_v, i_adc, vi.t_us);
-        HAL_UART_Transmit(&huart6, (uint8_t*)m, n, 20);
-    } else {
-        char m[] = "VI read failed\r\n";
-        HAL_UART_Transmit(&huart6, (uint8_t*)m, sizeof(m)-1, 10);
-    }
-
-    ExtractFullFFT(fft_packet);
-    Print_FFT_Summary(local_raw);
-    Ultra_ResumeNextFrame();
-} */
 
 /*void Transfer_ADC_To_DAC(void)
 {
