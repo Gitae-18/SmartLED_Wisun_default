@@ -3,10 +3,23 @@
 #include <stdio.h>
 #include "main.h"
 extern UART_HandleTypeDef huart6;
+extern void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n);
+
+#define WISUN_SNAP_CMD 0x12u
+
 static uint8_t xor_checksum(const uint8_t *p, size_t n){
     uint8_t x = 0;
     for (size_t i=0; i<n; ++i) x ^= p[i];
     return x;
+}
+static uint8_t g_wisun_tx_buf[PACKET_MAX_SIZE];
+static void log_outgoing_snap_frame(const uint8_t *frame, uint16_t frame_len, size_t data_len)
+{
+    if (!frame || frame_len < 13u || data_len < 7u) return;
+    if (frame[0] != 0x02u || frame[1] != 0xAAu || frame[2] != 0xABu) return;
+    if (frame[9] != WISUN_SNAP_CMD) return;
+
+    dbg_dump_uart6_with_tag("[WISUN_FRAME_TX_SNAP_FINAL]", frame, frame_len);
 }
 
 bool wisun_send_frame(const wisun_frame_cfg_t *cfg,
@@ -14,7 +27,8 @@ bool wisun_send_frame(const wisun_frame_cfg_t *cfg,
                       wisun_tx_fn tx, void *user)
 {
     if (!cfg || !data || !tx) return false;
-    if (data_len > 255) return false;     // DL 1바이트 제한
+    if (data_len > 255u) return false;
+    if ((data_len + 8u) > PACKET_MAX_SIZE) return false;
 
     uint8_t buf[PACKET_MAX_SIZE];
     size_t  i = 0;
@@ -23,22 +37,22 @@ bool wisun_send_frame(const wisun_frame_cfg_t *cfg,
     uint8_t sig2 = cfg->sig2 ? cfg->sig2 : 0xAB;
     uint16_t tmid = cfg->tmid;
 
-    buf[i++] = 0x02;              // STX
-    buf[i++] = sig1;              // SIG1 (0xAA)
-    buf[i++] = sig2;              // SIG2 (0xAA/0xAB)
-    buf[i++] = (uint8_t)data_len; // DL = CBOR 길이
+    buf[i++] = 0x02;
+    buf[i++] = sig1;
+    buf[i++] = sig2;
+    buf[i++] = (uint8_t)data_len;
     buf[i++] = (uint8_t)(tmid & 0xFF);
     buf[i++] = (uint8_t)(tmid >> 8);
 
     memcpy(&buf[i], data, data_len);
     i += data_len;
 
-    // CK: SIG1~SIG2~DL~TMID~DATA
-    uint8_t ck = xor_checksum(&buf[1], (uint16_t)(2 + 1 + 2 + data_len));
+    uint8_t ck = xor_checksum(&buf[1], (uint16_t)(2u + 1u + 2u + data_len));
     buf[i++] = ck;
-    buf[i++] = 0x03;              // ETX
+    buf[i++] = 0x03;
 
-    // 실제 UART 전송 함수 호출
+    log_outgoing_snap_frame(buf, (uint16_t)i, data_len);
+
     return tx(buf, (uint16_t)i, user);
 }
 
@@ -67,11 +81,9 @@ bool wisun_parse_frame(const uint8_t *buf, size_t len, wisun_frame_view_t *out)
         uint16_t ck_len = (uint16_t)(2u + 1u + 2u + dl);
         if (xor_checksum(&buf[1], ck_len) != buf[ck_pos]) return false;
 
-        if (dl < 2u) return false;
-        const uint8_t *p = &buf[data_off];
-        out->tmid = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-        out->data = p + 2u;
-        out->data_len = (uint8_t)(dl - 2u);
+        out->tmid = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+        out->data = &buf[data_off];
+        out->data_len = dl;
         return true;
     }
 
@@ -102,12 +114,10 @@ bool wisun_parse_frame(const uint8_t *buf, size_t len, wisun_frame_view_t *out)
     }
 
     // A 사용
-    if (dl < 2u) return false;
     {
-        const uint8_t *p = &buf[data_off];
-        out->tmid = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-        out->data = p + 2u;
-        out->data_len = (uint8_t)(dl - 2u);
+        out->tmid = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+        out->data = &buf[data_off];
+        out->data_len = dl;
     }
     return true;
 
@@ -121,13 +131,12 @@ try_B:
     if (xor_checksum(&buf[1], ck_len_B) != buf[ck_pos_B]) return false;
 
     // B에서는 DATA 길이 = dl - meta_len
-    if (dl < meta_len + 2u) return false;
+    if (dl < meta_len) return false;
     {
         uint16_t data_len = (uint16_t)(dl - meta_len);
-        const uint8_t *p = &buf[data_off];
-        out->tmid = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-        out->data = p + 2u;
-        out->data_len = (uint8_t)(data_len - 2u);
+        out->tmid = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+        out->data = &buf[data_off];
+        out->data_len = (uint8_t)data_len;
     }
     return true;
 }

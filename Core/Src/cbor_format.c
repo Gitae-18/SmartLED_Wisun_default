@@ -1,4 +1,5 @@
 #include "cbor_format.h"
+#include "cbor_format.h"
 #include <string.h>
 #include <stdio.h>
 #include "stm32h5xx_hal.h"   // MCU 맞게 수정

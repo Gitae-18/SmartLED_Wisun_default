@@ -72,7 +72,8 @@ static inline double rad2deg(double r) { return r * (180.0 / M_PI); }
 static double calc_solar_event_utc(
     int year, int month, int day,
     double latitude, double longitude,
-    double altitude_deg)
+    double altitude_deg,
+    int is_rise)
 {
     // 1) 요일 번호 계산
     int N1 = floor(275 * month / 9);
@@ -84,7 +85,7 @@ static double calc_solar_event_utc(
     double lng_hour = longitude / 15.0;
 
     // 3) 근사 시각 (sunrise 기준 6h)
-    double t = N + ((6 - lng_hour) / 24.0);
+    double t = N + (((is_rise ? 6.0 : 18.0) - lng_hour) / 24.0);
 
     // 4) 평균 근점이각
     double M = (0.9856 * t) - 3.289;
@@ -115,10 +116,14 @@ static double calc_solar_event_utc(
     if (cosH > 1 || cosH < -1)
         return -1;  // 극야/극일
 
-    double H = rad2deg(acos(cosH)) / 15.0;
+    double H = rad2deg(acos(cosH));
+    if (is_rise) {
+        H = 360.0 - H;
+    }
+    H /= 15.0;
 
     // 9) Local Mean Time
-    double T = RA - H + (0.06571 * t) - 6.622;
+    double T = H + RA - (0.06571 * t) - 6.622;
 
     // 10) UTC로 변환
     double UT = T - lng_hour;
@@ -145,19 +150,19 @@ void compute_sun_times(
 
     // sunrise
     double sr_utc = calc_solar_event_utc(year, month, day,
-                                         lat, lon, SUN_ALTITUDE_SUNRISE_SUNSET);
+                                         lat, lon, SUN_ALTITUDE_SUNRISE_SUNSET, 1);
 
     // sunset (sunrise + 12h 근사)
-    double sunset_utc = sr_utc + 12.0;
-    if (sunset_utc >= 24) sunset_utc -= 24;
+    double sunset_utc = calc_solar_event_utc(year, month, day,
+                                             lat, lon, SUN_ALTITUDE_SUNRISE_SUNSET, 0);
 
     // civil dawn
     double cd_utc = calc_solar_event_utc(year, month, day,
-                                         lat, lon, SUN_ALTITUDE_CIVIL);
+                                         lat, lon, SUN_ALTITUDE_CIVIL, 1);
 
     // civil dusk = dawn + 12h
-    double cs_utc = cd_utc + 12.0;
-    if (cs_utc >= 24) cs_utc -= 24;
+    double cs_utc = calc_solar_event_utc(year, month, day,
+                                         lat, lon, SUN_ALTITUDE_CIVIL, 0);
 
     // 한국시간 (UTC+9)
     sr_utc += 9;

@@ -33,16 +33,6 @@
 	</natures>
 	<linkedResources>
 		<link>
-			<name>App</name>
-			<type>2</type>
-			<location>D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/App</location>
-		</link>
-		<link>
-			<name>Target</name>
-			<type>2</type>
-			<location>D:/Smart_OnDevice/SmartDevice/STM32H573I-DK/X-CUBE-AI/Target</location>
-		</link>
-		<link>
 			<name>Drivers/STM32H5xx_HAL_Driver/stm32h5xx_hal.c</name>
 			<type>1</type>
 			<location>C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal.c</location>

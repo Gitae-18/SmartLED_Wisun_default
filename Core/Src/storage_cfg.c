@@ -1,61 +1,72 @@
 #include "storage_cfg.h"
 #include "stm32h5xx_hal.h"
+
 #include <string.h>
 
-// ------------------------------------------------------
-// CRC
-// ------------------------------------------------------
-uint32_t node_cfg_calc_crc(const node_cfg_t *cfg)
-{
-    const uint8_t *p = (const uint8_t*)cfg;
-    uint32_t crc = 0xFFFFFFFF;
+typedef struct {
+    uint8_t  mode;
+    uint8_t  light_on_hour;
+    uint8_t  light_on_min;
+    uint8_t  light_off_hour;
+    uint8_t  light_off_min;
+    uint8_t  manual_duration_min;
+    uint8_t  snap_enable;
+    uint8_t  snap_period_min;
+    uint16_t mid;
+    uint8_t  rch[2];
+    uint8_t  mid_assigned;
+    uint8_t  on_off_mode;
+    uint8_t  on_corr_mode;
+    uint16_t on_corr_time_min;
+    uint8_t  off_corr_mode;
+    uint16_t off_corr_time_min;
+    uint16_t forced_time_min;
+    uint8_t  saving_mode;
+    uint8_t  saving_start_hour;
+    uint8_t  saving_start_min;
+    uint8_t  saving_end_hour;
+    uint8_t  saving_end_min;
+} legacy_node_cfg_t;
 
-    for (size_t i = 0; i < sizeof(node_cfg_t); i++) {
-        crc ^= p[i];
+typedef struct __attribute__((packed)) {
+    uint32_t          magic;
+    uint32_t          crc;
+    legacy_node_cfg_t cfg;
+} legacy_node_cfg_flash_t;
+
+static uint32_t calc_crc32(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
         for (int b = 0; b < 8; b++) {
-            crc = (crc & 1) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
         }
     }
+
     return crc ^ 0xFFFFFFFFu;
 }
 
-// ------------------------------------------------------
-// 기본값 초기화
-// ------------------------------------------------------
-void node_cfg_init_default(node_cfg_t *cfg)
+uint32_t node_cfg_calc_crc(const node_cfg_t *cfg)
 {
-    cfg->mode = 2;
-    cfg->light_on_hour = 19;
-    cfg->light_on_min  = 0;
-    cfg->light_off_hour = 6;
-    cfg->light_off_min  = 0;
-    cfg->manual_duration_min = 30;
-    cfg->snap_enable = 1;
-    cfg->snap_period_min = 1;
-    cfg->mid          = 0;      // 아직 미할당
-    cfg->rch[0] = 0;
-    cfg->rch[1] = 0;     // 부트스트랩 채널 (필요하면 매크로 사용)
-    cfg->mid_assigned = 0;
-
-    cfg->on_off_mode       = 0;
-	cfg->on_corr_mode      = 0;
-	cfg->on_corr_time_min  = 0;
-
-	cfg->off_corr_mode     = 0;
-	cfg->off_corr_time_min = 0;
-
-	cfg->forced_time_min   = 0;
-
-	cfg->saving_mode       = 0;
-	cfg->saving_start_hour = 0;
-	cfg->saving_start_min  = 0;
-	cfg->saving_end_hour   = 0;
-	cfg->saving_end_min    = 0;
+    return calc_crc32((const uint8_t *)cfg, sizeof(*cfg));
 }
 
-// ------------------------------------------------------
-// MID SAVE/LOAD (H5 QUADWORD write)
-// ------------------------------------------------------
+void node_cfg_init_default(node_cfg_t *cfg)
+{
+    memset(cfg, 0, sizeof(*cfg));
+
+    cfg->mode = 1;
+    cfg->light_on_hour = 19;
+    cfg->light_on_min = 0;
+    cfg->light_off_hour = 6;
+    cfg->light_off_min = 0;
+    cfg->manual_duration_min = 30;
+    cfg->snap_enable = 1;
+    cfg->snap_interval_sec = 60;
+}
+
 bool save_mid_to_flash(uint16_t mid)
 {
     HAL_FLASH_Unlock();
@@ -63,10 +74,10 @@ bool save_mid_to_flash(uint16_t mid)
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t err = 0;
 
-    erase.TypeErase  = FLASH_TYPEERASE_SECTORS;
-    erase.Banks      = FLASH_BANK_USED;
-    erase.Sector     = FLASH_MID_SECTOR;
-    erase.NbSectors  = 1;
+    erase.TypeErase = FLASH_TYPEERASE_SECTORS;
+    erase.Banks = FLASH_BANK_USED;
+    erase.Sector = FLASH_MID_SECTOR;
+    erase.NbSectors = 1;
 
     if (HAL_FLASHEx_Erase(&erase, &err) != HAL_OK) {
         HAL_FLASH_Lock();
@@ -74,12 +85,11 @@ bool save_mid_to_flash(uint16_t mid)
     }
 
     uint8_t buf[16] = {0xFF};
-    buf[0] = (mid >> 8) & 0xFF;
-    buf[1] = mid & 0xFF;
+    buf[0] = (uint8_t)((mid >> 8) & 0xFFu);
+    buf[1] = (uint8_t)(mid & 0xFFu);
 
     if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD,
-            FLASH_MID_ADDR, (uint32_t)buf) != HAL_OK)
-    {
+            FLASH_MID_ADDR, (uint32_t)buf) != HAL_OK) {
         HAL_FLASH_Lock();
         return false;
     }
@@ -91,51 +101,56 @@ bool save_mid_to_flash(uint16_t mid)
 bool load_mid_from_flash(uint16_t *out_mid)
 {
     uint8_t *p = (uint8_t *)FLASH_MID_ADDR;
-
     uint16_t v = ((uint16_t)p[0] << 8) | p[1];
-    if (v == 0xFFFF) return false;
+
+    if (v == 0xFFFFu) {
+        return false;
+    }
 
     *out_mid = v;
     return true;
 }
 
-// ------------------------------------------------------
-// NODE CFG SAVE/LOAD
-// ------------------------------------------------------
 bool save_node_cfg_to_flash(const node_cfg_t *cfg)
 {
     node_cfg_flash_t image;
+    uint8_t flash_buf[(sizeof(node_cfg_flash_t) + 15u) & ~15u];
+    uint8_t *src = flash_buf;
+    size_t size = sizeof(flash_buf);
+
+    memset(flash_buf, 0xFF, sizeof(flash_buf));
+
     image.magic = NODE_CFG_MAGIC;
-    image.cfg   = *cfg;
-    image.crc   = node_cfg_calc_crc(cfg);
+    image.cfg = *cfg;
+    image.crc = node_cfg_calc_crc(cfg);
+    memcpy(flash_buf, &image, sizeof(image));
 
     HAL_FLASH_Unlock();
 
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t err = 0;
 
-    erase.TypeErase  = FLASH_TYPEERASE_SECTORS;
-    erase.Banks      = FLASH_BANK_USED;
-    erase.Sector     = FLASH_NODECFG_SECTOR;
-    erase.NbSectors  = 1;
+    erase.TypeErase = FLASH_TYPEERASE_SECTORS;
+    erase.Banks = FLASH_BANK_USED;
+    erase.Sector = FLASH_NODECFG_SECTOR;
+    erase.NbSectors = 1;
 
     if (HAL_FLASHEx_Erase(&erase, &err) != HAL_OK) {
         HAL_FLASH_Lock();
         return false;
     }
 
-    uint8_t *src = (uint8_t*)&image;
-    size_t size = sizeof(image);
+    {
+        uint32_t addr = FLASH_NODECFG_ADDR;
 
-    uint32_t addr = FLASH_NODECFG_ADDR;
-    for (size_t i = 0; i < size; i += 16) {
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD,
-                addr, (uint32_t)(src + i)) != HAL_OK)
-        {
-            HAL_FLASH_Lock();
-            return false;
+        for (size_t i = 0; i < size; i += 16u) {
+            if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD,
+                    addr, (uint32_t)(src + i)) != HAL_OK) {
+                HAL_FLASH_Lock();
+                return false;
+            }
+            addr += 16u;
         }
-        addr += 16;
     }
 
     HAL_FLASH_Lock();
@@ -144,15 +159,56 @@ bool save_node_cfg_to_flash(const node_cfg_t *cfg)
 
 bool load_node_cfg_from_flash(node_cfg_t *out)
 {
-    node_cfg_flash_t *f = (node_cfg_flash_t *)FLASH_NODECFG_ADDR;
+    node_cfg_flash_t *cur = (node_cfg_flash_t *)FLASH_NODECFG_ADDR;
 
-    if (f->magic != NODE_CFG_MAGIC)
-        return false;
+    if (cur->magic == NODE_CFG_MAGIC) {
+        uint32_t calc = node_cfg_calc_crc(&cur->cfg);
 
-    uint32_t calc = node_cfg_calc_crc(&f->cfg);
-    if (calc != f->crc)
-        return false;
+        if (calc == cur->crc) {
+            *out = cur->cfg;
+            out->forced_time_min = 0u;
+            if (out->snap_interval_sec == 0u) {
+                out->snap_interval_sec = 60u;
+            }
+            return true;
+        }
+    }
 
-    *out = f->cfg;
-    return true;
+    {
+        legacy_node_cfg_flash_t *legacy = (legacy_node_cfg_flash_t *)FLASH_NODECFG_ADDR;
+
+        if (legacy->magic != NODE_CFG_MAGIC) {
+            return false;
+        }
+
+        if (calc_crc32((const uint8_t *)&legacy->cfg, sizeof(legacy->cfg)) != legacy->crc) {
+            return false;
+        }
+
+        memset(out, 0, sizeof(*out));
+        out->mode = legacy->cfg.mode;
+        out->light_on_hour = legacy->cfg.light_on_hour;
+        out->light_on_min = legacy->cfg.light_on_min;
+        out->light_off_hour = legacy->cfg.light_off_hour;
+        out->light_off_min = legacy->cfg.light_off_min;
+        out->manual_duration_min = legacy->cfg.manual_duration_min;
+        out->snap_enable = legacy->cfg.snap_enable;
+        out->snap_interval_sec = (uint16_t)legacy->cfg.snap_period_min * 60u;
+        out->mid = legacy->cfg.mid;
+        out->rch[0] = legacy->cfg.rch[0];
+        out->rch[1] = legacy->cfg.rch[1];
+        out->mid_assigned = legacy->cfg.mid_assigned;
+        out->on_off_mode = legacy->cfg.on_off_mode;
+        out->on_corr_mode = legacy->cfg.on_corr_mode;
+        out->on_corr_time_min = legacy->cfg.on_corr_time_min;
+        out->off_corr_mode = legacy->cfg.off_corr_mode;
+        out->off_corr_time_min = legacy->cfg.off_corr_time_min;
+        out->forced_time_min = 0u;
+        out->saving_mode = legacy->cfg.saving_mode;
+        out->saving_start_hour = legacy->cfg.saving_start_hour;
+        out->saving_start_min = legacy->cfg.saving_start_min;
+        out->saving_end_hour = legacy->cfg.saving_end_hour;
+        out->saving_end_min = legacy->cfg.saving_end_min;
+        return true;
+    }
 }
