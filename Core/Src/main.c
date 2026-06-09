@@ -123,6 +123,7 @@ typedef struct {
 
 typedef struct {
     uint8_t  in_use;
+    uint8_t  compact_snap;
 
     uint16_t tmid;                 
     uint8_t  data[256];   // Wi-SUN DATA 부분만
@@ -423,7 +424,12 @@ typedef struct {
 #define FFT_DELAY_MS     100
 
 #define AE_ROWS 10
-#define AE_COLS 130
+#define AE_COLS 4
+
+#define AI_FEATURE_FREQ_KHZ_IDX 0
+#define AI_FEATURE_ADC_PK_IDX   1
+#define AI_FEATURE_CURRENT_IDX  2
+#define AI_FEATURE_VIN_IDX      3
 
 #define TRIGGER_THRESHOLD  0.1f
 #define TRIGGER_TIMEOUT 1000
@@ -472,8 +478,16 @@ typedef struct {
 
 #define FFT_FREQ_SCALE 100.0f
 #define FFT_AMP_SCALE  1000.0f
+#define AI_MSE_SCALE   1000000.0f
 
-#define SNAP_BIN_BODY_LEN (1u + 12u + 4u + 4u + 4u + 1u + 1u + (8u * SNAP_FFT_PAIRS) + 4u + 4u + 1u + 1u)
+#define SNAP_COMPACT_BODY_LEN 40u
+#define SNAP_COMPACT_TTL_DEFAULT 3u
+#define SNAP_COMPACT_TTL_IDX 1u
+#define SNAP_COMPACT_UID_IDX 2u
+#define SNAP_COMPACT_UID_LEN 12u
+#define SNAP_COMPACT_SNAP_COUNT_IDX 35u
+#define SNAP_AI_RESULT_LEN (1u + 4u + 1u)
+#define SNAP_BIN_BODY_LEN (1u + 12u + 4u + 4u + 4u + 1u + 1u + (8u * SNAP_FFT_PAIRS) + 4u + 4u + 1u + 1u + SNAP_AI_RESULT_LEN)
 
 #ifndef SUP_MIN_HZ
 #define SUP_MIN_HZ 20000.0f   // 20 kHz
@@ -499,6 +513,9 @@ typedef struct __attribute__((packed)) {
     
        uint32_t snap_count;
        uint32_t msg_id;   
+       uint8_t  ai_valid;
+       uint32_t ai_mse_x1000000;
+       int8_t   ai_pred;
        uint8_t  ok;       // 1=success
        int8_t   err_code; 
 } SnapBin_t;
@@ -801,6 +818,7 @@ static void init_uid_string(void);
 static inline int is_night(int now, int dusk, int dawn);
 static bool is_bootstrap_cmd(uint8_t cmd);
 void Input_Ai_Model(float v);
+void Input_Ai_Model_Features(float freq_khz, float adc_pk, float current, float vin);
 static void InitHannWindowOnce(void);
 uint32_t Get_Device_ID(void);
 float Get_Calibrated_Vref(void);
@@ -825,13 +843,7 @@ static void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_o
 static uint8_t light_state_event_fill_measurements(light_state_event_t *ev);
 static uint8_t encode_light_state_event_bin(uint8_t *out, uint16_t out_cap, const light_state_event_t *ev);
 static void light_state_event_poll(void);
-static void light_sensor_cache_update(float voltage,
-                                      float current,
-                                      float temp,
-                                      uint8_t fft_count,
-                                      const float *fft_freq,
-                                      const float *fft_amp,
-                                      uint32_t snap_count);
+static void light_sensor_cache_update(float voltage, float current, float temp, uint8_t fft_count, const float *fft_freq, const float *fft_amp, uint32_t snap_count);
 static uint16_t apply_time_correction_min(uint16_t base_min, uint8_t corr_mode, uint16_t corr_delta_min);
 static uint8_t time_window_contains(uint16_t now_min, uint16_t start_min, uint16_t end_min);
 static void mid_pack_uid12(uint8_t out12[12]);
@@ -858,40 +870,10 @@ static int parse_hex8(const char *s, uint8_t out[8]);
 static int hexval(char c);
 static uint8_t try_handle_uart6_local_cmd(const char *line);
 static uint8_t apply_snapshot_uart_cmd(const char *arg);
-static uint16_t build_transport_payload(uint16_t target_mid,
-                                        uint8_t ttl,
-                                        uint8_t cmd,
-                                        uint8_t flags,
-                                        uint16_t msg_id,
-                                        const uint8_t *body,
-                                        uint16_t body_len,
-                                        uint8_t *out,
-                                        uint16_t out_cap);
-static uint16_t encode_snap_bin(uint8_t *out,
-                                uint16_t out_cap,
-                                const uint8_t uid12[12],
-                                float volt,
-                                float curr,
-                                float temp,
-                                uint8_t light_on,
-                                uint8_t fft_count,
-                                const float *fft_freq,
-                                const float *fft_amp,
-                                uint32_t snap_count,
-                                uint32_t msg_id,
-                                uint8_t ok,
-                                int8_t err_code);
-static void log_snap_gateway_tx(const char *tag,
-                                uint16_t tmid,
-                                const uint8_t *data,
-                                uint16_t len);
-static uint8_t send_transport_direct(uint16_t target_mid,
-                                     uint8_t ttl,
-                                     uint8_t cmd,
-                                     uint8_t flags,
-                                     uint16_t msg_id,
-                                     const uint8_t *body,
-                                     uint16_t body_len);
+static uint16_t build_transport_payload(uint16_t target_mid, uint8_t ttl, uint8_t cmd, uint8_t flags, uint16_t msg_id, const uint8_t *body, uint16_t body_len, uint8_t *out, uint16_t out_cap);
+static uint16_t encode_snap_bin(uint8_t *out, uint16_t out_cap, const uint8_t uid12[12], float volt, float curr, float temp, uint8_t light_on, uint8_t fft_count, const float *fft_freq, const float *fft_amp, uint32_t snap_count, uint32_t msg_id, uint8_t ok, int8_t err_code, uint8_t ai_valid, uint32_t ai_mse_x1000000, int8_t ai_pred_value);
+static void log_snap_gateway_tx(const char *tag, uint16_t tmid, const uint8_t *data, uint16_t len);
+static uint8_t send_transport_direct(uint16_t target_mid, uint8_t ttl, uint8_t cmd, uint8_t flags, uint16_t msg_id, const uint8_t *body, uint16_t body_len);
 void Query_MID_From_WiSUN(void);
 void Read_UID(void);
 uint32_t Read_Voltage_ADC(void);
@@ -923,6 +905,7 @@ void wisun_toss_packet(uint16_t tmid, const uint8_t *rx, uint16_t rx_len);
 void wisun_process_rx_mainloop(void);
 static inline uint16_t xorshift16(uint16_t x);
 static uint16_t wisun_expected_packet_len(const uint8_t *buf, uint16_t have_len);
+static bool is_compact_snap_body(const uint8_t *data, uint16_t len);
 void reconfigure_snapshot_timer_from_cfg(void);
 void rtc_update(void);
 bool rtc_ensure_valid_or_set_default(void);
@@ -933,6 +916,7 @@ void uart6_log(const char *fmt, ...);
 //void SendReceivedBroadcastPacket(void);
 //void Process_WiSun_Command(wisun_rx_buffer, wisun_rx_index);
 //void loop_fft_for_duration(uint32_t duration_ms);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -971,15 +955,7 @@ static inline uint8_t at_q_next(uint8_t x) { return (uint8_t)((x + 1) % AT_LINE_
 static inline uint8_t at_q_is_full(void)   { return at_q_next(at_q_w) == at_q_r; }
 static inline uint8_t at_q_is_empty(void)  { return at_q_w == at_q_r; }
 
-static uint16_t build_transport_payload(uint16_t target_mid,
-                                        uint8_t ttl,
-                                        uint8_t cmd,
-                                        uint8_t flags,
-                                        uint16_t msg_id,
-                                        const uint8_t *body,
-                                        uint16_t body_len,
-                                        uint8_t *out,
-                                        uint16_t out_cap)
+static uint16_t build_transport_payload(uint16_t target_mid, uint8_t ttl, uint8_t cmd, uint8_t flags, uint16_t msg_id, const uint8_t *body, uint16_t body_len, uint8_t *out, uint16_t out_cap)
 {
     uint16_t need = (uint16_t)(body_len + 7u);
 
@@ -1039,22 +1015,37 @@ static int32_t scale_fft_amp_x1000(float amp)
     return (int32_t)scaled;
 }
 
-static uint16_t encode_snap_bin(uint8_t *out,
-                                uint16_t out_cap,
-                                const uint8_t uid12[12],
-                                float volt,
-                                float curr,
-                                float temp,
-                                uint8_t light_on,
-                                uint8_t fft_count,
-                                const float *fft_freq,
-                                const float *fft_amp,
-                                uint32_t snap_count,
-                                uint32_t msg_id,
-                                uint8_t ok,
-                                int8_t err_code)
+static uint32_t scale_ai_mse_x1000000(float mse)
+{
+    double scaled;
+
+    if (!isfinite(mse) || mse <= 0.0f) {
+        return 0u;
+    }
+
+    scaled = ((double)mse * (double)AI_MSE_SCALE) + 0.5;
+    if (scaled >= (double)UINT32_MAX) {
+        return UINT32_MAX;
+    }
+
+    return (uint32_t)scaled;
+}
+
+static float snap_round_4dp(float v)
+{
+    if (!isfinite(v)) {
+        return 0.0f;
+    }
+
+    return roundf(v * 10000.0f) * 0.0001f;
+}
+
+static uint16_t encode_snap_bin(uint8_t *out, uint16_t out_cap, const uint8_t uid12[12], float volt, float curr, float temp, uint8_t light_on, uint8_t fft_count, const float *fft_freq, const float *fft_amp, uint32_t snap_count, uint32_t msg_id, uint8_t ok, int8_t err_code, uint8_t ai_valid, uint32_t ai_mse_x1000000, int8_t ai_pred_value)
 {
     uint16_t off = 0u;
+    float volt_4dp = snap_round_4dp(volt);
+    float curr_4dp = snap_round_4dp(curr);
+    float temp_4dp = snap_round_4dp(temp);
 
     if (out == NULL || uid12 == NULL || out_cap < SNAP_BIN_BODY_LEN) {
         return 0u;
@@ -1064,14 +1055,14 @@ static uint16_t encode_snap_bin(uint8_t *out,
     memcpy(&out[off], uid12, 12u);
     off += 12u;
 
-    memcpy(&out[off], &volt, sizeof(volt));
-    off += (uint16_t)sizeof(volt);
+    memcpy(&out[off], &volt_4dp, sizeof(volt_4dp));
+    off += (uint16_t)sizeof(volt_4dp);
 
-    memcpy(&out[off], &curr, sizeof(curr));
-    off += (uint16_t)sizeof(curr);
+    memcpy(&out[off], &curr_4dp, sizeof(curr_4dp));
+    off += (uint16_t)sizeof(curr_4dp);
 
-    memcpy(&out[off], &temp, sizeof(temp));
-    off += (uint16_t)sizeof(temp);
+    memcpy(&out[off], &temp_4dp, sizeof(temp_4dp));
+    off += (uint16_t)sizeof(temp_4dp);
 
     out[off++] = light_on;
     out[off++] = fft_count;
@@ -1102,16 +1093,67 @@ static uint16_t encode_snap_bin(uint8_t *out,
     memcpy(&out[off], &msg_id, sizeof(msg_id));
     off += (uint16_t)sizeof(msg_id);
 
+    out[off++] = ai_valid ? 1u : 0u;
+    memcpy(&out[off], &ai_mse_x1000000, sizeof(ai_mse_x1000000));
+    off += (uint16_t)sizeof(ai_mse_x1000000);
+    out[off++] = (uint8_t)ai_pred_value;
+
     out[off++] = ok;
     out[off++] = (uint8_t)err_code;
 
     return off;
 }
 
-static void log_snap_gateway_tx(const char *tag,
-                                uint16_t tmid,
-                                const uint8_t *data,
-                                uint16_t len)
+static uint16_t encode_snap_compact_bin(uint8_t *out, uint16_t out_cap, const uint8_t uid12[12], float volt, float curr, float temp, uint8_t light_on, uint8_t has_fft0, float fft0_freq, float fft0_amp, uint32_t snap_count, uint8_t ai_valid, uint32_t ai_mse_x1000000, int8_t ai_pred_value, uint8_t ok, uint8_t ttl)
+{
+    uint16_t off = 0u;
+    float volt_4dp = snap_round_4dp(volt);
+    float curr_4dp = snap_round_4dp(curr);
+    float temp_4dp = snap_round_4dp(temp);
+    uint32_t freq_x100 = has_fft0 ? scale_fft_freq_x100(fft0_freq) : 0u;
+    int32_t amp_x1000 = has_fft0 ? scale_fft_amp_x1000(fft0_amp) : 0;
+    uint16_t snap_count16 = (uint16_t)(snap_count & 0xFFFFu);
+    uint16_t ai_mse16 = (ai_mse_x1000000 > 0xFFFFu) ? 0xFFFFu : (uint16_t)ai_mse_x1000000;
+    uint8_t flags = 0u;
+
+    if (out == NULL || uid12 == NULL || out_cap < SNAP_COMPACT_BODY_LEN) {
+        return 0u;
+    }
+
+    if (ai_valid) flags |= 0x01u;
+    if (ai_pred_value != 0) flags |= 0x02u;
+    if (ok) flags |= 0x04u;
+
+    out[off++] = 0x01u;
+    out[off++] = ttl;
+    memcpy(&out[off], uid12, 12u);
+    off += 12u;
+
+    memcpy(&out[off], &volt_4dp, sizeof(volt_4dp));
+    off += (uint16_t)sizeof(volt_4dp);
+    memcpy(&out[off], &curr_4dp, sizeof(curr_4dp));
+    off += (uint16_t)sizeof(curr_4dp);
+    memcpy(&out[off], &temp_4dp, sizeof(temp_4dp));
+    off += (uint16_t)sizeof(temp_4dp);
+
+    out[off++] = light_on ? 1u : 0u;
+
+    memcpy(&out[off], &freq_x100, sizeof(freq_x100));
+    off += (uint16_t)sizeof(freq_x100);
+    memcpy(&out[off], &amp_x1000, sizeof(amp_x1000));
+    off += (uint16_t)sizeof(amp_x1000);
+
+    memcpy(&out[off], &snap_count16, sizeof(snap_count16));
+    off += (uint16_t)sizeof(snap_count16);
+    memcpy(&out[off], &ai_mse16, sizeof(ai_mse16));
+    off += (uint16_t)sizeof(ai_mse16);
+
+    out[off++] = flags;
+
+    return off;
+}
+
+static void log_snap_gateway_tx(const char *tag, uint16_t tmid, const uint8_t *data, uint16_t len)
 {
     uint16_t target_mid;
     uint8_t ttl;
@@ -1144,13 +1186,7 @@ static void log_snap_gateway_tx(const char *tag,
     dbg_dump_uart6_with_tag((tag != NULL) ? tag : "[GW_TX_SNAP]", data, len);
 }
 
-static uint8_t send_transport_direct(uint16_t target_mid,
-                                     uint8_t ttl,
-                                     uint8_t cmd,
-                                     uint8_t flags,
-                                     uint16_t msg_id,
-                                     const uint8_t *body,
-                                     uint16_t body_len)
+static uint8_t send_transport_direct(uint16_t target_mid, uint8_t ttl, uint8_t cmd, uint8_t flags, uint16_t msg_id, const uint8_t *body, uint16_t body_len)
 {
     uint8_t payload[HOP_MAX_FRAME];
     uint16_t payload_len = build_transport_payload(target_mid,
@@ -1256,13 +1292,7 @@ static void light_event_set_reason(uint8_t reason)
     g_light_event_reason_context = reason;
 }
 
-static void light_sensor_cache_update(float voltage,
-                                      float current,
-                                      float temp,
-                                      uint8_t fft_count,
-                                      const float *fft_freq,
-                                      const float *fft_amp,
-                                      uint32_t snap_count)
+static void light_sensor_cache_update(float voltage, float current, float temp, uint8_t fft_count, const float *fft_freq, const float *fft_amp, uint32_t snap_count)
 {
     light_event_sensor_cache_t cache;
 
@@ -1870,18 +1900,23 @@ static void hop_tx_task_poll(void)
         if ((int32_t)(now - g_hop_q[i].due_tick) < 0) continue;
 
         // ----- TTL 처리 -----
-        if (g_hop_q[i].data_len < 3u) {
+        uint8_t ttl_idx = g_hop_q[i].compact_snap ? SNAP_COMPACT_TTL_IDX : 2u;
+        uint8_t min_len = g_hop_q[i].compact_snap ? SNAP_COMPACT_BODY_LEN : 3u;
+
+        if (g_hop_q[i].data_len < min_len) {
             g_hop_q[i].in_use = 0;
+            g_hop_q[i].compact_snap = 0u;
             continue;
         }
 
-        uint8_t ttl = g_hop_q[i].data[2];
+        uint8_t ttl = g_hop_q[i].data[ttl_idx];
         if (ttl == 0) {
             dbg_dump_uart6_with_tag("[HOP_DROP_TTL0]", g_hop_q[i].data, g_hop_q[i].data_len);
             g_hop_q[i].in_use = 0;
+            g_hop_q[i].compact_snap = 0u;
             continue;
         }
-        g_hop_q[i].data[2] = (uint8_t)(ttl - 1u);
+        g_hop_q[i].data[ttl_idx] = (uint8_t)(ttl - 1u);
         
         wisun_frame_cfg_t cfg = {
             .sig1 = 0xAA,
@@ -1898,6 +1933,7 @@ static void hop_tx_task_poll(void)
                                NULL);
 
         g_hop_q[i].in_use = 0;
+        g_hop_q[i].compact_snap = 0u;
     }
 }
 
@@ -1913,15 +1949,7 @@ static uint8_t enqueue_transport_tx(uint16_t tmid, uint8_t cmd, uint8_t flags, u
         return 0u;
     }
 
-    payload_len = build_transport_payload(tmid,
-                                          (ttl == 0u) ? HOP_TTL_DEFAULT : ttl,
-                                          cmd,
-                                          flags,
-                                          msg_id,
-                                          body,
-                                          body_len,
-                                          payload,
-                                          (uint16_t)sizeof(payload));
+    payload_len = build_transport_payload(tmid, (ttl == 0u) ? HOP_TTL_DEFAULT : ttl, cmd, flags, msg_id, body, body_len, payload, (uint16_t)sizeof(payload));
     if (payload_len == 0u) {
         return 0u;
     }
@@ -1934,6 +1962,7 @@ static uint8_t enqueue_transport_tx(uint16_t tmid, uint8_t cmd, uint8_t flags, u
         if (g_hop_q[qi].in_use) continue;
 
         g_hop_q[qi].tmid = 0x0000u;
+        g_hop_q[qi].compact_snap = 0u;
         g_hop_q[qi].data_len = payload_len;
         memcpy(g_hop_q[qi].data, payload, payload_len);
         g_hop_q[qi].due_tick = now + base_delay + jitter;
@@ -1946,12 +1975,7 @@ static uint8_t enqueue_transport_tx(uint16_t tmid, uint8_t cmd, uint8_t flags, u
 }
 
 
-static void handle_binary_cmd(uint8_t cmd,
-                              uint8_t flags,
-                              uint16_t msg_id,
-                              uint16_t tmid,
-                              const uint8_t *data,
-                              uint16_t len)
+static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, const uint8_t *data, uint16_t len)
 {
     uint8_t uid12[12];
     mid_pack_uid12(uid12);
@@ -2101,13 +2125,7 @@ static void handle_binary_cmd(uint8_t cmd,
                 ack.ok = 1;
                 ack.err_code = 0;
 
-                schedule_resp_with_slot(
-                    RESP_KIND_RAW_BIN,
-                    tmid,
-                    msg_id,
-                    (uint8_t*)&ack,
-                    sizeof(ack)
-                );
+                schedule_resp_with_slot(RESP_KIND_RAW_BIN, tmid, msg_id, (uint8_t*)&ack, sizeof(ack) );
 
                 break;
             }
@@ -2662,40 +2680,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     g_frame_c1 = DWT->CYCCNT;
     ultra_frame_ready = 1;
 }
-/*
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance != ADC1) return;
-    g_adc_isr_cnt++;
-
-    uint16_t raw = HAL_ADC_GetValue(hadc);
-    float x = ((float)raw * 3.3f / 4095.0f) - 1.65f;
-    if (wr_idx == 0) g_frame_t0 = HAL_GetTick();
-    g_ai_sample = x;
-    g_ai_sample_ready = 1;
-
-    if (!ultra_sampling_paused) {
-
-            inputSignal[wr_idx++] = x;
-    
-            g_last_wr  = wr_idx;
-
-            if (wr_idx >= FFT_SIZE) {
-            	g_frame_t1 = HAL_GetTick();
-                wr_idx = 0;
-                ultra_frame_ready = true;
-                ultra_sampling_paused = true;
-                g_frame_ready_cnt++;
-
-                (void)HAL_ADC_Stop_IT(&hadc1);
-                return;
-            }
-    }
-    if (!ultra_sampling_paused) {
-        HAL_ADC_Start_IT(&hadc1);
-    }
-}
-*/
 
 /*
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -2754,14 +2738,12 @@ void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n)
     return;
 #else
     if (!p || !n) return;
-
-    // ?�그 먼�? 출력
+    
     if (tag) {
         HAL_UART_Transmit(&huart6, (uint8_t*)tag, (uint16_t)strlen(tag), HAL_MAX_DELAY);
         HAL_UART_Transmit(&huart6, (uint8_t*)" ", 1, HAL_MAX_DELAY);
     }
-
-    // 바이?�들??HEX�?출력
+    
     for (uint16_t i = 0; i < n; ++i) {
         char s[4];
         int m = snprintf(s, sizeof(s), "%02X", p[i]);
@@ -2851,6 +2833,37 @@ static void hop_mark_key(uint32_t key)
     }
 }
 
+static uint16_t compact_snap_count16(const uint8_t *data)
+{
+    return (uint16_t)data[SNAP_COMPACT_SNAP_COUNT_IDX] |
+           ((uint16_t)data[SNAP_COMPACT_SNAP_COUNT_IDX + 1u] << 8);
+}
+
+static uint32_t compact_snap_seen_key(const uint8_t *data)
+{
+    uint32_t h = 2166136261u;
+
+    for (uint8_t i = 0u; i < SNAP_COMPACT_UID_LEN; ++i) {
+        h ^= data[SNAP_COMPACT_UID_IDX + i];
+        h *= 16777619u;
+    }
+
+    h ^= data[SNAP_COMPACT_SNAP_COUNT_IDX];
+    h *= 16777619u;
+    h ^= data[SNAP_COMPACT_SNAP_COUNT_IDX + 1u];
+    h *= 16777619u;
+
+    return h;
+}
+
+static bool compact_snap_is_own_uid(const uint8_t *data)
+{
+    uint8_t uid12[12];
+
+    mid_pack_uid12(uid12);
+    return memcmp(&data[SNAP_COMPACT_UID_IDX], uid12, sizeof(uid12)) == 0;
+}
+
 void rtc_minute_tick(uint8_t hour, uint8_t min)
 {
     uint16_t now = hour * 60u + min;
@@ -2893,49 +2906,18 @@ void Input_Ai_Model(float v)
         ai_pending = 1;
     }
 }
-/*
-bool save_node_cfg_to_flash(const node_cfg_t *cfg)
+
+void Input_Ai_Model_Features(float freq_khz, float adc_pk, float current, float vin)
 {
-    HAL_StatusTypeDef st;
-    uint32_t page_error = 0;
+    if (ai_pending) return;
 
-    node_cfg_flash_t image;
-    image.magic = NODE_CFG_MAGIC;
-    image.cfg   = *cfg;
-    image.crc   = node_cfg_calc_crc(cfg);
-
-    HAL_FLASH_Unlock();
-
-    FLASH_EraseInitTypeDef erase = {0};
-    erase.TypeErase = FLASH_TYPEERASE_PAGES;   // H5: PAGE erase
-    erase.Banks     = NODE_CFG_FLASH_BANK;     // FLASH_BANK_1
-    erase.Page      = NODE_CFG_FLASH_PAGE;     
-    erase.NbPages   = 1;
-
-    st = HAL_FLASHEx_Erase(&erase, &page_error);
-    if (st != HAL_OK) {
-        HAL_FLASH_Lock();
-        return false;
-    }
-    
-    const uint64_t *src = (const uint64_t *)&image;
-    uint32_t addr = NODE_CFG_FLASH_ADDR;
-    size_t   n_qwords = (sizeof(image) + 7u) / 8u;   
-
-    for (size_t i = 0; i < n_qwords; ++i) {
-        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, src[i]);
-        if (st != HAL_OK) {
-            HAL_FLASH_Lock();
-            return false;
-        }
-        addr += 8u;
-    }
-
-    // 4. FLASH lock
-    HAL_FLASH_Lock();
-    return true;
+    ai_input[AI_FEATURE_FREQ_KHZ_IDX] = freq_khz;
+    ai_input[AI_FEATURE_ADC_PK_IDX]   = adc_pk;
+    ai_input[AI_FEATURE_CURRENT_IDX]  = current;
+    ai_input[AI_FEATURE_VIN_IDX]      = vin;
+    ai_index = AE_COLS;
+    ai_pending = 1;
 }
-*/
 
 static int hexval(char c){
     if ('0'<=c && c<='9') return c-'0';
@@ -3263,7 +3245,7 @@ void wisun_process_rx_mainloop(void)
 
     if (packet_len == 0 || packet_len > PACKET_MAX_SIZE) return;
     
-    PrintReceivedPacket("Receive Packet : ", buf, packet_len);
+    // PrintReceivedPacket("Receive Packet : ", buf, packet_len);
 
     wisun_frame_view_t v;
     if (!wisun_parse_frame(buf, packet_len, &v)) {
@@ -3279,6 +3261,60 @@ void wisun_process_rx_mainloop(void)
     uint8_t  cmd   = 0;
     uint8_t  flags = 0;
     uint16_t msg_id = 0;
+
+    if (is_compact_snap_body(v.data, v.data_len)) {
+        uint8_t compact_ttl = v.data[SNAP_COMPACT_TTL_IDX];
+        uint16_t compact_snap_count = compact_snap_count16(v.data);
+        uint32_t compact_key = compact_snap_seen_key(v.data);
+
+        if (compact_snap_is_own_uid(v.data)) {
+            timing_log("[HOP_COMPACT_DROP_OWN] src=0x%04X snap=%u len=%u\r\n",
+                       (unsigned)src_mid,
+                       (unsigned)compact_snap_count,
+                       (unsigned)v.data_len);
+            return;
+        }
+
+        if (compact_ttl == 0u) {
+            dbg_dump_uart6_with_tag("[HOP_COMPACT_DROP_TTL0]", v.data, v.data_len);
+            return;
+        }
+
+        if (hop_seen_key(compact_key)) {
+            dbg_dump_uart6_with_tag("[HOP_COMPACT_DROP_DUP]", v.data, v.data_len);
+            return;
+        }
+
+        uint32_t now = HAL_GetTick();
+        uint32_t base_delay = 5u + (my_mid % 5u);
+        uint32_t jitter = xorshift16((uint16_t)(my_mid ^ (uint16_t)now ^ compact_snap_count)) % 40u;
+        uint8_t enqueued = 0u;
+
+        for (int qi = 0; qi < HOP_QUEUE_SIZE; ++qi) {
+            if (g_hop_q[qi].in_use) continue;
+
+            g_hop_q[qi].tmid = 0x0000u;
+            g_hop_q[qi].compact_snap = 1u;
+            g_hop_q[qi].data_len = v.data_len;
+            memcpy(g_hop_q[qi].data, v.data, v.data_len);
+            g_hop_q[qi].due_tick = now + base_delay + jitter;
+            g_hop_q[qi].in_use = 1u;
+            hop_mark_key(compact_key);
+            enqueued = 1u;
+            break;
+        }
+
+        if (!enqueued) {
+            dbg_dump_uart6_with_tag("[HOP_COMPACT_DROP_QFULL]", v.data, v.data_len);
+        } else {
+            timing_log("[HOP_COMPACT_ENQ] src=0x%04X snap=%u ttl=%u len=%u\r\n",
+                       (unsigned)src_mid,
+                       (unsigned)compact_snap_count,
+                       (unsigned)compact_ttl,
+                       (unsigned)v.data_len);
+        }
+        return;
+    }
 
     if (v.data_len >= 7U) {
         target_mid = (uint16_t)v.data[0] | ((uint16_t)v.data[1] << 8);
@@ -3396,6 +3432,7 @@ void wisun_process_rx_mainloop(void)
             }
 
             g_hop_q[qi].tmid     = v.tmid;
+            g_hop_q[qi].compact_snap = 0u;
             g_hop_q[qi].data_len = v.data_len;
             memcpy(g_hop_q[qi].data, v.data, v.data_len);
 
@@ -3456,7 +3493,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         i_adc_v = (float)vi.curr_raw * K_ADC2V;
     }
 
-    /* ===== 4) ?�도 ===== */
+    /* ===== 4) 온도 ===== */
     uint16_t temp_raw = 0;
     float temp_v = 0.0f;
     float temp_c = 0.0f;
@@ -3564,14 +3601,103 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     bool light_on = light_is_on_logical() ? true : false;
     push_snapshot(light_on, vin_v, i_adc_v, temp_c, supersonic_val);
 
+    uint8_t snap_ai_valid = 0u;
+    float snap_ai_mse = 0.0f;
+    uint32_t snap_ai_mse_x1000000 = 0u;
+    int snap_ai_pred = 0;
+
+    if (fft_cnt > 0u) {
+        float ai_features[AE_COLS] = {0};
+
+        ai_features[AI_FEATURE_FREQ_KHZ_IDX] = fft_freq[0] * 0.001f;
+        ai_features[AI_FEATURE_ADC_PK_IDX]   = fft_amp[0];
+        ai_features[AI_FEATURE_CURRENT_IDX]  = i_adc_v;
+        ai_features[AI_FEATURE_VIN_IDX]      = vin_v;
+
+        if (run_inference(ai_features, &snap_ai_mse, &snap_ai_pred) == 0) {
+            snap_ai_valid = 1u;
+            snap_ai_mse_x1000000 = scale_ai_mse_x1000000(snap_ai_mse);
+            ai_mse = snap_ai_mse;
+            ai_pred = snap_ai_pred;
+            ai_pending = 0u;
+            ai_index = 0;
+            ai_next_run = HAL_GetTick() + ai_period_ms;
+        } else {
+            uart6_log("[AI] snap inference failed\r\n");
+        }
+    }
+
     g_monitor_count++;
-    light_sensor_cache_update(vin_v,
-                              i_adc_v,
-                              temp_c,
-                              fft_cnt,
-                              fft_freq,
-                              fft_amp,
-                              g_monitor_count);
+    light_sensor_cache_update(vin_v, i_adc_v, temp_c, fft_cnt, fft_freq, fft_amp, g_monitor_count);
+
+    {
+        uint16_t tx_msg_id = (req_msg_id != 0u) ? req_msg_id : (uint16_t)(g_monitor_count & 0xFFFFu);
+        uint16_t snap_tmid = 0u;
+        uint8_t snap_body[SNAP_COMPACT_BODY_LEN];
+        uint16_t snap_body_len = 0u;
+        uint8_t local_fft_cnt;
+        float local_fft0_freq = 0.0f;
+        float local_fft0_amp = 0.0f;
+        uint32_t local_monitor_count;
+
+        if (tx_msg_id == 0u) {
+            tx_msg_id = 1u;
+        }
+
+        if (req_msg_id != 0u && g_resp_slot.tmid != 0u) {
+            snap_tmid = g_resp_slot.tmid;
+        }
+
+        __disable_irq();
+        local_fft_cnt = fft_cnt;
+        if (local_fft_cnt > 0u) {
+            local_fft0_freq = fft_freq[0];
+            local_fft0_amp = fft_amp[0];
+        }
+        local_monitor_count = g_monitor_count;
+        __enable_irq();
+
+        uart6_log("[SNAP_FFT_SRC] cnt=%u f0=%f a0=%f raw_f0=%lu raw_a0=%lu light=%u\r\n",
+                  (unsigned)local_fft_cnt,
+                  local_fft0_freq,
+                  local_fft0_amp,
+                  (unsigned long)(uint32_t)(local_fft0_freq * 100.0f),
+                  (unsigned long)(uint32_t)(local_fft0_amp * 1000.0f),
+                  (unsigned)(light_on ? 1u : 0u));
+
+        snap_body_len = encode_snap_compact_bin(snap_body, (uint16_t)sizeof(snap_body), uid12, vin_v, i_adc_v, temp_c, light_on ? 1u : 0u, local_fft_cnt > 0u ? 1u : 0u, local_fft0_freq, local_fft0_amp, local_monitor_count, snap_ai_valid, snap_ai_mse_x1000000, (int8_t)snap_ai_pred, 1u, SNAP_COMPACT_TTL_DEFAULT);
+
+        if (snap_body_len == 0u) {
+            uart6_log("[SNAP_SKIP] reason=compact_encode_fail req_msg_id=%u my_mid=%u\r\n",
+                      (unsigned)tx_msg_id,
+                      (unsigned)my_mid);
+            Ultra_StartDmaFrame();
+            g_last_has_msg_id = 0;
+            g_last_has_cmd = 0;
+            return;
+        }
+
+        uart6_log("[SNAP_AFTER_BUILD] compact_body_len=%u tx_msg_id=%u frame_tmid=0x%04X\r\n",
+                  (unsigned)snap_body_len,
+                  (unsigned)tx_msg_id,
+                  (unsigned)snap_tmid);
+        dbg_dump_uart6_with_tag("[SNAP_COMPACT_BODY]", snap_body, snap_body_len);
+
+        (void)send_wisun_binary(snap_tmid, snap_body, snap_body_len);
+
+        uart6_log("[SNAP_TX] req_msg_id=%lu snap_count=%lu light_on=%u fft_count=%u mid=%u frame_tmid=0x%04X compact=1\r\n",
+                  (unsigned long)tx_msg_id,
+                  (unsigned long)g_monitor_count,
+                  (unsigned)(light_on ? 1u : 0u),
+                  (unsigned)fft_cnt,
+                  (unsigned)my_mid,
+                  (unsigned)snap_tmid);
+
+        Ultra_StartDmaFrame();
+        g_last_has_msg_id = 0;
+        g_last_has_cmd = 0;
+        return;
+    }
 
     /* ===== 7) SnapBin 구성전송 ===== */
     uint16_t tx_msg_id = (req_msg_id != 0u) ? req_msg_id : (uint16_t)(g_monitor_count & 0xFFFFu);
@@ -3606,9 +3732,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         memset(&snap, 0, sizeof(snap));
         snap.t = 0x01u;
         memcpy(snap.uid, uid12, sizeof(snap.uid));
-        snap.volt = vin_v;
-        snap.curr = i_adc_v;
-        snap.temp = temp_c;
+        snap.volt = snap_round_4dp(vin_v);
+        snap.curr = snap_round_4dp(i_adc_v);
+        snap.temp = snap_round_4dp(temp_c);
         snap.light_on = light_on ? 1u : 0u;
         snap.fft_count = fft_cnt;
         for (uint8_t k = 0; k < SNAP_FFT_PAIRS; ++k) {
@@ -3619,6 +3745,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         }
         snap.snap_count = g_monitor_count;
         snap.msg_id = (uint32_t)tx_msg_id;
+        snap.ai_valid = snap_ai_valid;
+        snap.ai_mse_x1000000 = snap_ai_mse_x1000000;
+        snap.ai_pred = (int8_t)snap_ai_pred;
         snap.ok = 1u;
         snap.err_code = 0;
 
@@ -3676,20 +3805,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
               (unsigned long)(uint32_t)(local_fft_amp[0] * 1000.0f),
               (unsigned)(light_on ? 1u : 0u));
 
-    snap_body_len = encode_snap_bin(snap_body,
-                                    (uint16_t)sizeof(snap_body),
-                                    uid12,
-                                    vin_v,
-                                    i_adc_v,
-                                    temp_c,
-                                    light_on ? 1u : 0u,
-                                    local_fft_cnt,
-                                    local_fft_freq,
-                                    local_fft_amp,
-                                    local_monitor_count,
-                                    local_msg_id,
-                                    1u,
-                                    0);
+    snap_body_len = encode_snap_bin(snap_body, (uint16_t)sizeof(snap_body), uid12, vin_v, i_adc_v, temp_c, light_on ? 1u : 0u, local_fft_cnt, local_fft_freq, local_fft_amp, local_monitor_count, local_msg_id, 1u, 0, snap_ai_valid, snap_ai_mse_x1000000, (int8_t)snap_ai_pred);
 
     /* uart6_log("[SNAP_ENCODE_RESULT] body_len=%u fft_cnt=%u freq0=%f amp0=%f snap_count=%lu msg_id=%lu\r\n",
               (unsigned)snap_body_len,
@@ -3702,53 +3818,24 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     dbg_dump_uart6_with_tag("[SNAP_BODY_HEX_ENCODE]", snap_body, snap_body_len); */
     }
     if (snap_body_len == 0u) {
-        uart6_log("[SNAP_SKIP] reason=encode_fail req_msg_id=%u my_mid=%u\r\n",
-                  (unsigned)tx_msg_id,
-                  (unsigned)my_mid);
+        uart6_log("[SNAP_SKIP] reason=encode_fail req_msg_id=%u my_mid=%u\r\n", (unsigned)tx_msg_id, (unsigned)my_mid);
         Ultra_StartDmaFrame();
         g_last_has_msg_id = 0;
         g_last_has_cmd    = 0;
         return;
     }
 
-    snap_tx_dump_len = build_transport_payload(0x0000u,
-                                               0u,
-                                               SNAP_REPORT_CMD,
-                                               0u,
-                                               tx_msg_id,
-                                               snap_body,
-                                               snap_body_len,
-                                               snap_tx_dump,
-                                               (uint16_t)sizeof(snap_tx_dump));
-    uart6_log("[SNAP_AFTER_BUILD] body_len=%u tx_len=%u tx_msg_id=%u\r\n",
-              (unsigned)snap_body_len,
-              (unsigned)snap_tx_dump_len,
-              (unsigned)tx_msg_id);
+    snap_tx_dump_len = build_transport_payload(0x0000u, 0u, SNAP_REPORT_CMD, 0u, tx_msg_id, snap_body, snap_body_len, snap_tx_dump, (uint16_t)sizeof(snap_tx_dump));
+    uart6_log("[SNAP_AFTER_BUILD] body_len=%u tx_len=%u tx_msg_id=%u\r\n", (unsigned)snap_body_len, (unsigned)snap_tx_dump_len, (unsigned)tx_msg_id);
 
     // dbg_dump_uart6_with_tag("[SNAP_AFTER_BUILD_BODY]", snap_body, snap_body_len);
     // dbg_dump_uart6_with_tag("[SNAP_AFTER_BUILD_TX]", snap_tx_dump, snap_tx_dump_len);
 
     if (snap_tmid != 0u) {
-        snap_enqueued = enqueue_transport_tx(
-            snap_tmid,
-            SNAP_REPORT_CMD,
-            0u,
-            tx_msg_id,
-            snap_body,
-            snap_body_len,
-            HOP_TTL_DEFAULT
-        );
+        snap_enqueued = enqueue_transport_tx( snap_tmid, SNAP_REPORT_CMD, 0u, tx_msg_id, snap_body, snap_body_len, HOP_TTL_DEFAULT );
 
         if (snap_enqueued) {
-            snap_tx_dump_len = build_transport_payload(snap_tmid,
-                                                       HOP_TTL_DEFAULT,
-                                                       SNAP_REPORT_CMD,
-                                                       0u,
-                                                       tx_msg_id,
-                                                       snap_body,
-                                                       snap_body_len,
-                                                       snap_tx_dump,
-                                                       (uint16_t)sizeof(snap_tx_dump));
+            snap_tx_dump_len = build_transport_payload(snap_tmid, HOP_TTL_DEFAULT, SNAP_REPORT_CMD, 0u, tx_msg_id, snap_body, snap_body_len, snap_tx_dump, (uint16_t)sizeof(snap_tx_dump));
         }
     }
 
@@ -3765,13 +3852,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     //                         snap_tx_dump,
     //                         snap_tx_dump_len);
     if (!snap_enqueued) {
-        (void)send_transport_direct(0x0000u,
-                                    0u,
-                                    SNAP_REPORT_CMD,
-                                    0u,
-                                    tx_msg_id,
-                                    snap_body,
-                                    snap_body_len);
+        (void)send_transport_direct(0x0000u, 0u, SNAP_REPORT_CMD, 0u, tx_msg_id, snap_body, snap_body_len);
     }
     Ultra_StartDmaFrame();
 
@@ -3783,10 +3864,10 @@ float ntc_voltage_to_temp_c(float temp_v)
 {
 
     if (temp_v >= ntc_voltage_table[0]) {
-        return ntc_temp_table[0];              // -40???�하
+        return ntc_temp_table[0];              // -40도이하
     }
     if (temp_v <= ntc_voltage_table[NTC_LUT_SIZE - 1]) {
-        return ntc_temp_table[NTC_LUT_SIZE - 1]; // 80???�상
+        return ntc_temp_table[NTC_LUT_SIZE - 1]; // 80도이상
     }
 
     for (int i = 1; i < NTC_LUT_SIZE; ++i) {
@@ -3798,7 +3879,7 @@ float ntc_voltage_to_temp_c(float temp_v)
             float t_lo = ntc_temp_table[i];
 
             float ratio = (v_hi - temp_v) / (v_hi - v_lo); // 0~1
-            // ?�형 보간
+            // 선형 보간
             return t_hi + (t_lo - t_hi) * ratio;
         }
     }
@@ -3806,11 +3887,7 @@ float ntc_voltage_to_temp_c(float temp_v)
     return ntc_temp_table[NTC_LUT_SIZE - 1];
 }
 
-static void schedule_resp_with_slot(resp_kind_t kind,
-                                    uint16_t tmid,
-                                    uint16_t msg_id,
-                                    const uint8_t *raw,
-                                    uint16_t raw_len)
+static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t msg_id, const uint8_t *raw, uint16_t raw_len)
 {
     uint32_t now = HAL_GetTick();
 
@@ -3920,7 +3997,6 @@ static void schedule_resp_with_slot(resp_kind_t kind,
         HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)n, 100);
     }
 }
-
 
 /* USER CODE END 0 */
 
@@ -4303,15 +4379,6 @@ int main(void)
 	             );
 	         }
 	         /* ===================== AI ===================== */
-	         static uint8_t forced = 0;
-	        if (!forced && HAL_GetTick() > 3000)
-	         {
-	             forced = 1;
-	             ai_pending = 1;
-	             ai_index = AE_COLS;
-	             uart6_log("[AI] forced pending=1\r\n");
-	         }
-
 	         static uint32_t hb_t = 0;
 	         static uint32_t ai_feed_tick = 0;
 	         now = HAL_GetTick();
@@ -5047,16 +5114,11 @@ static void ai_service(void)
 
     ai_pending = 0;                
     ai_index = 0;
-    uart6_log("[AI] done idx=%u pending=%u\r\n",
-                      (unsigned)ai_index, (unsigned)ai_pending);
+    uart6_log("[AI] done idx=%u pending=%u\r\n", (unsigned)ai_index, (unsigned)ai_pending);
     ai_next_run = now + ai_period_ms; 
 }
 
-static void push_snapshot(bool light_on,
-                          float voltage,
-                          float current,
-                          float temp,
-                          float supersonic)
+static void push_snapshot(bool light_on, float voltage, float current, float temp, float supersonic)
 {
     snapshot_t s = {
         .light_on   = light_on,
@@ -5139,29 +5201,12 @@ static void resp_slot_task_poll(void)
                 }
             }
 
-            if (!enqueue_transport_tx(g_resp_slot.tmid,
-                                    tx_cmd,
-                                    0u,
-                                    g_resp_slot.msg_id,
-                                    g_resp_slot.buf,
-                                    g_resp_slot.len,
-                                    HOP_TTL_DEFAULT)) {
-                (void)send_transport_direct(g_resp_slot.tmid,
-                                            HOP_TTL_DEFAULT,
-                                            tx_cmd,
-                                            0u,
-                                            g_resp_slot.msg_id,
-                                            g_resp_slot.buf,
-                                            g_resp_slot.len);
+            if (!enqueue_transport_tx(g_resp_slot.tmid, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len, HOP_TTL_DEFAULT)) 
+            {
+                (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
             }
         } else {
-            (void)send_transport_direct(0x0000u,
-                                        0u,
-                                        g_resp_slot.buf[0],
-                                        0u,
-                                        g_resp_slot.msg_id,
-                                        g_resp_slot.buf,
-                                        g_resp_slot.len);
+            (void)send_transport_direct(0x0000u, 0u, g_resp_slot.buf[0], 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
         }
 
         memset(&g_resp_slot, 0, sizeof(g_resp_slot));
@@ -5181,29 +5226,12 @@ static void resp_slot_task_poll(void)
         uint8_t  result = g_resp_slot.result;
 
         if (g_resp_slot.tmid != 0u) {
-            if (!enqueue_transport_tx(g_resp_slot.tmid,
-                                      cmd,
-                                      flags,
-                                      msg_id,
-                                      &result,
-                                      1u,
-                                      HOP_TTL_DEFAULT)) {
-                (void)send_transport_direct(g_resp_slot.tmid,
-                                            HOP_TTL_DEFAULT,
-                                            cmd,
-                                            flags,
-                                            msg_id,
-                                            &result,
-                                            1u);
+            if (!enqueue_transport_tx(g_resp_slot.tmid, cmd, flags, msg_id, &result, 1u, HOP_TTL_DEFAULT)) 
+            {
+                (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, cmd, flags, msg_id, &result, 1u);
             }
         } else {
-            (void)send_transport_direct(0x0000u,
-                                        0u,
-                                        cmd,
-                                        flags,
-                                        msg_id,
-                                        &result,
-                                        1u);
+            (void)send_transport_direct(0x0000u, 0u, cmd, flags, msg_id, &result, 1u);
         }
 
         debug6("[ACK_TX_DONE]\r\n");
@@ -5231,6 +5259,13 @@ static bool is_uplink_report_cmd(uint8_t cmd)
     default:
         return false;
     }
+}
+
+static bool is_compact_snap_body(const uint8_t *data, uint16_t len)
+{
+    return data != NULL &&
+           len == SNAP_COMPACT_BODY_LEN &&
+           data[0] == 0x01u;
 }
 
 bool rtc_ensure_valid_or_set_default(void)
@@ -5521,11 +5556,11 @@ static void InitHannWindowOnce(void)
 }
 
 void ExtractFullFFT(const float32_t *in, float fs_hz, FftData_t *dest) {
-	InitHannWindowOnce();
-	
-	static float32_t xw[FFT_SIZE];
+	InitHannWindowOnce();	
 
+	static float32_t xw[FFT_SIZE];
 	float32_t mean = 0.0f;
+
 	for (int i = 0; i < FFT_SIZE; i++) mean += in[i];
 	mean /= (float32_t)FFT_SIZE;
 
@@ -5667,10 +5702,8 @@ static void scheduler_poll(void)
         want_on = 0u;
     }
 
-    light_event_set_reason((g_node_cfg.saving_mode &&
-                            time_window_contains(now_min, saving_start_min, saving_end_min)) ?
-                           LIGHT_EVENT_REASON_SAVING :
-                           LIGHT_EVENT_REASON_SCHEDULE);
+    light_event_set_reason((g_node_cfg.saving_mode && time_window_contains(now_min, saving_start_min, saving_end_min)) ? LIGHT_EVENT_REASON_SAVING : LIGHT_EVENT_REASON_SCHEDULE);
+
     if (want_on) {
         light_on();
     } else {
@@ -5689,7 +5722,6 @@ void Query_MID_From_WiSUN(void) {
     char t[64];
     snprintf(t, sizeof(t), "[MID? set wait=1]\r\n");
     HAL_UART_Transmit(&huart6, (uint8_t*)t, strlen(t), 50);
-
     HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
 }
 
@@ -5948,13 +5980,7 @@ static void nodeinfo_finish_and_send(uint8_t ok, int8_t err_code)
                          (unsigned)g_nodeinfo.used, (unsigned)text_len);
         HAL_UART_Transmit(&huart6, (uint8_t*)m, (uint16_t)n, 100);
 
-        schedule_resp_with_slot(
-            RESP_KIND_RAW_BIN,
-            g_nodeinfo.tmid,
-            g_nodeinfo.msg_id,
-            (uint8_t*)g_nodeinfo.text,
-            text_len
-        );
+        schedule_resp_with_slot( RESP_KIND_RAW_BIN, g_nodeinfo.tmid, g_nodeinfo.msg_id, (uint8_t*)g_nodeinfo.text, text_len );
     } else {
         char msg[32];
         int n = snprintf(msg, sizeof(msg), "ERR=%d\n", (int)err_code);
@@ -6013,8 +6039,7 @@ void Debug_Print_FFT_Peak(void)
         InitHannWindowOnce();
 
         uint32_t my_seq = ++fft_seq;
-
-        /* ---- ?�압/?�류 ---- */
+        
         float vin_v = 0.0f;
         float i_adc_v = 0.0f;
         {
@@ -6025,8 +6050,7 @@ void Debug_Print_FFT_Peak(void)
             }
         }
 
-        static float32_t x[FFT_SIZE];
-        /* ---- ?�력 ?�전 복사 ---- */
+        static float32_t x[FFT_SIZE];        
 
         /*__disable_irq();
         ultra_frame_ready = false;
@@ -6047,7 +6071,7 @@ void Debug_Print_FFT_Peak(void)
         /*uart6_log("[DTDBG] c0=%lu c1=%lu dc=%lu SystemCoreClock=%lu FFT_SIZE=%u dt_ms=%.3f fs_eff=%.1f\r\n",
                   (unsigned long)c0, (unsigned long)c1, (unsigned long)dc,
                   (unsigned long)SystemCoreClock, (unsigned)FFT_SIZE, dt_ms, fs_eff);*/
-        // ---- Zero-crossing 주파??추정 ----
+        // ---- Zero-crossing 주파수 추정 ----
         /*int zc = 0;
         for (int i = 1; i < FFT_SIZE; i++) {
             float a = x[i-1];
@@ -6066,8 +6090,7 @@ void Debug_Print_FFT_Peak(void)
             (double)dt_ms, (double)fs_eff, zc, (double)(f_zc/1000.0f));
         HAL_UART_Transmit(&huart6, (uint8_t*)b, (uint16_t)n, 20);*/
 
-
-        /* ---- 1초에 1�??�력 ?�태 체크 ---- */
+        
         uint32_t now = HAL_GetTick();
         if ((now - dbg_t) >= 1000u) {
             dbg_t = now;
@@ -6102,7 +6125,7 @@ void Debug_Print_FFT_Peak(void)
         float lo = lo_hz;
         float hi = hi_hz;
         
-        const float guard = 3000.0f;          // 3kHz
+        const float guard = 3000.0f;         
         if (hi > nyq - guard) hi = nyq - guard;
         if (lo < 1.0f) lo = 1.0f;
 

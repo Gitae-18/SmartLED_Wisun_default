@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2025 STMicroelectronics.
+  * Copyright (c) 2026 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -56,13 +56,9 @@
 #include "ai_datatypes_defines.h"
 #include "network.h"
 #include "network_data.h"
-
 /* USER CODE BEGIN includes */
 #include "app_x-cube-ai.h"
-#include "ai_minmax.h"
-#include "data_samples.h"
-#include "quant.h"
-
+#include "ai_config.h"
 /* USER CODE END includes */
 
 /* IO buffers ----------------------------------------------------------------*/
@@ -91,10 +87,14 @@ NULL
 
 /* Activations buffers -------------------------------------------------------*/
 
-AI_ALIGNED(32)
-static uint8_t pool0[AI_NETWORK_DATA_ACTIVATION_1_SIZE];
+//ai_handle data_activations0[] = {(ai_handle) 0x20000000};
 
-ai_handle data_activations0[] = {pool0};
+AI_ALIGNED(32)
+static ai_u8 activations[AI_NETWORK_DATA_ACTIVATIONS_SIZE];
+
+static ai_handle data_activations[] = {
+ activations
+};
 
 /* AI objects ----------------------------------------------------------------*/
 
@@ -105,213 +105,225 @@ static ai_buffer* ai_output;
 
 static void ai_log_err(const ai_error err, const char *fct)
 {
-  /* USER CODE BEGIN log */
-	  if (fct) {
-		printf("AI Error (%s) - type=0x%02x code=0x%02x\r\n",
-			   fct, err.type, err.code);
-	  } else {
-		printf("AI Error - type=0x%02x code=0x%02x\r\n",
-			   err.type, err.code);
-	  }
-  /* USER CODE END log */
+/* USER CODE BEGIN log */
+if (fct)
+ printf("TEMPLATE - Error (%s) - type=0x%02x code=0x%02x\r\n", fct,
+	 err.type, err.code);
+else
+ printf("TEMPLATE - Error - type=0x%02x code=0x%02x\r\n", err.type, err.code);
+
+do {} while (1);
+/* USER CODE END log */
 }
 
 static int ai_boostrap(ai_handle *act_addr)
 {
-  ai_error err;
+ai_error err;
 
-  /* Create and initialize an instance of the model */
-  err = ai_network_create_and_init(&network, act_addr, NULL);
-  if (err.type != AI_ERROR_NONE) {
-    ai_log_err(err, "ai_network_create_and_init");
-    return -1;
-  }
+/* Create and initialize an instance of the model */
+err = ai_network_create_and_init(&network, act_addr, NULL);
+if (err.type != AI_ERROR_NONE) {
+ ai_log_err(err, "ai_network_create_and_init");
+ return -1;
+}
 
-  ai_input = ai_network_inputs_get(network, NULL);
-  ai_output = ai_network_outputs_get(network, NULL);
+ai_input = ai_network_inputs_get(network, NULL);
+ai_output = ai_network_outputs_get(network, NULL);
 
 #if defined(AI_NETWORK_INPUTS_IN_ACTIVATIONS)
-  /*  In the case where "--allocate-inputs" option is used, memory buffer can be
-   *  used from the activations buffer. This is not mandatory.
-   */
-  for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++) {
-	data_ins[idx] = ai_input[idx].data;
-  }
+/*  In the case where "--allocate-inputs" option is used, memory buffer can be
+*  used from the activations buffer. This is not mandatory.
+*/
+for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++) {
+data_ins[idx] = ai_input[idx].data;
+}
 #else
-  for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++) {
-	  ai_input[idx].data = data_ins[idx];
-  }
+for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++) {
+  ai_input[idx].data = data_ins[idx];
+}
 #endif
 
 #if defined(AI_NETWORK_OUTPUTS_IN_ACTIVATIONS)
-  /*  In the case where "--allocate-outputs" option is used, memory buffer can be
-   *  used from the activations buffer. This is no mandatory.
-   */
-  for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++) {
-	data_outs[idx] = ai_output[idx].data;
-  }
+/*  In the case where "--allocate-outputs" option is used, memory buffer can be
+*  used from the activations buffer. This is no mandatory.
+*/
+for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++) {
+data_outs[idx] = ai_output[idx].data;
+}
 #else
-  for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++) {
-	ai_output[idx].data = data_outs[idx];
-  }
+for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++) {
+ai_output[idx].data = data_outs[idx];
+}
 #endif
 
-  return 0;
+return 0;
 }
 
 static int ai_run(void)
 {
-  ai_i32 batch;
+ai_i32 batch;
 
-  batch = ai_network_run(network, ai_input, ai_output);
-  if (batch != 1) {
-    ai_log_err(ai_network_get_error(network),
-        "ai_network_run");
-    return -1;
-  }
+batch = ai_network_run(network, ai_input, ai_output);
+if (batch != 1) {
+ ai_log_err(ai_network_get_error(network),
+	 "ai_network_run");
+ return -1;
+}
 
-  return 0;
+return 0;
 }
 
 /* USER CODE BEGIN 2 */
-static int ai_run_inference(void)
-{
-  ai_i32 batch;
-
-  batch = ai_network_run(network, ai_input, ai_output);
-  if (batch != 1) {
-    ai_log_err(ai_network_get_error(network), "ai_network_run");
-    return -1;
-  }
-  return 0;
-}
-
 int acquire_and_process_data(ai_i8* data[])
 {
-  /* fill the inputs of the c-model
-  for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++ )
-  {
-      data[idx] = ....
-  }
+/* fill the inputs of the c-model
+for (int idx=0; idx < AI_NETWORK_IN_NUM; idx++ )
+{
+   data[idx] = ....
+}
 
-  */
-  return 0;
+*/
+return 0;
 }
 
 int post_process(ai_i8* data[])
 {
-  /* process the predictions
-  for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++ )
-  {
-      data[idx] = ....
-  }
-
-  */
-  return 0;
-}
-
-
-float compute_mse(const float *x_scaled, const float *y_scaled, int len)
+/* process the predictions
+for (int idx=0; idx < AI_NETWORK_OUT_NUM; idx++ )
 {
-    double acc = 0.0;
-    for (int i = 0; i < len; i++) {
-        double d = (double)x_scaled[i] - (double)y_scaled[i];
-        acc += d * d;
-    }
-    return (float)(acc / (double)len);
+   data[idx] = ....
 }
 
-int ae_classify(float mse)
-{
-    return (mse >= AE_THRESH) ? 1 : 0;   // 1 = 이상, 0 = 정상
+*/
+return 0;
 }
+
 
 int AI_Run_FromRaw(const float *x_raw, uint32_t len,
                    float *out_mse, int *out_pred)
 {
-  if (network == AI_HANDLE_NULL) {
-    printf("network not initialized!\r\n");
-    return -1;
-  }
+printf("run_inference...\r\n");
+if (network == AI_HANDLE_NULL) {
+printf("network not initialized!\r\n");
+return -1;
+}
 
-  if (len != AE_COLS) {
-    printf("AI_Run_FromRaw: len mismatch (%lu vs %d)\r\n",
-           (unsigned long)len, (int)AE_COLS);
-    return -2;
-  }
+if (len != AE_COLS) {
+printf("AI_Run_FromRaw: len mismatch (%lu vs %d)\r\n",
+       (unsigned long)len, (int)AE_COLS);
+return -2;
+}
 
-  /* 1) MinMax 스케일링 (원본 -> 0~1) */
-  float x_scaled[AE_COLS];
-  ai_minmax_scale(x_raw, x_scaled, AE_COLS);
+// 1) MinMax 스케일링 (원본 -> 0~1)
+float x_scaled[AE_COLS];
+ai_minmax_scale(x_raw, x_scaled, AE_COLS);
 
-  /* 2) INT8 양자화 */
-  ae_quantize_in_vec(
-      x_scaled,
-      (int8_t*)AI_HANDLE_PTR(ai_input[0].data),
-      AE_COLS);
+// 2) INT8 양자화
+ae_quantize_in_vec(
+  x_scaled,
+  (int8_t*)AI_HANDLE_PTR(ai_input[0].data),
+  AE_COLS);
 
-  /* 3) 모델 추론 */
-  ai_i32 batch = ai_network_run(network, ai_input, ai_output);
-  if (batch != 1) {
-    ai_log_err(ai_network_get_error(network), "ai_network_run");
-    return -3;
-  }
+// 3) 모델 추론
+ai_i32 batch = ai_network_run(network, ai_input, ai_output);
 
-  /* 4) 출력 역양자화 (int8 -> float, 같은 스케일 도메인) */
-  const int8_t *out_q = (const int8_t*)AI_HANDLE_PTR(ai_output[0].data);
-  float y_deq[AE_COLS];
-  ae_dequantize_out_vec(out_q, y_deq, AE_COLS);
+if (batch != 1) {
+ai_log_err(ai_network_get_error(network), "ai_network_run");
+return -3;
+}
 
-  /* 5) MSE(x_scaled vs y_deq) 계산 */
-  double acc = 0.0;
-  for (int k = 0; k < AE_COLS; ++k) {
-    double d = (double)x_scaled[k] - (double)y_deq[k];
-    acc += d * d;
-  }
-  float mse = (float)(acc / (double)AE_COLS);
+// 4) 출력 역양자화 (int8 -> float, 같은 스케일 도메인)
+const int8_t *out_q = (const int8_t*)AI_HANDLE_PTR(ai_output[0].data);
+float y_deq[AE_COLS];
+ae_dequantize_out_vec(out_q, y_deq, AE_COLS);
 
-  /* 6) Threshold 기반 분류 */
-  int pred = (mse >= AE_THRESH) ? 1 : 0;
+// 5) MSE 계산 (외부로 안 내보냄)
+double acc = 0.0;
+for (int k = 0; k < AE_COLS; ++k) {
+double d = (double)x_scaled[k] - (double)y_deq[k];
+acc += d * d;
+}
+float mse = (float)(acc / (double)AE_COLS);
 
-  if (out_mse)  *out_mse  = mse;
-  if (out_pred) *out_pred = pred;
+//  int mse_int  = (int)mse;
+//  int mse_frac = (int)((mse - mse_int) * 100000000.0f);  // 소수점 8자리
+//
+//  if (mse_frac < 0) mse_frac = -mse_frac;
+//
+//  printf("  Infer MSE : %d.%08d\r\n", mse_int, mse_frac);
 
-  return 0;
+//  printf("AE_COLS=%d\r\n", AE_COLS);
+//
+//  const int8_t *in_q  = (const int8_t*)AI_HANDLE_PTR(ai_input[0].data);
+//
+//  for (int k = 0; k < AE_COLS; ++k) {
+//      printf("[%d] in_q=%d out_q=%d x=%d y=%d\r\n",
+//          k,
+//          in_q[k],
+//          out_q[k],
+//          (int)(x_scaled[k] * 1000000.0f),
+//          (int)(y_deq[k] * 1000000.0f)
+//      );
+//  }
+
+
+// 6) Threshold 기반 분류 -> pred 리턴
+int pred_value = (mse >= AE_THRESH) ? 1 : 0;
+
+if (out_mse) *out_mse = mse;
+if (out_pred) *out_pred = pred_value;
+
+return 0;
 }
 
 int run_inference(const float *x, float *mse, int *pred)
 {
-  return AI_Run_FromRaw(x, AE_COLS, mse, pred);
+return AI_Run_FromRaw(x, AE_COLS, mse, pred);
 }
 /* USER CODE END 2 */
 
 /* Entry points --------------------------------------------------------------*/
 
+//void MX_X_CUBE_AI_Init(void)
+//{
+//    /* USER CODE BEGIN 5 */
+//	printf("ai_init\r\n");
+//
+//	if (ai_boostrap(data_activations0) != 0) {
+//		printf("ai_bootstrap_fail\r\n");
+//		return;
+//	}
+//
+//	printf("ai_bootstrap_ok\r\n");
+//    /* USER CODE END 5 */
+//}
+
 void MX_X_CUBE_AI_Init(void)
 {
-    /* USER CODE BEGIN 5 */
+ printf("ai_init\r\n");
 
-  printf("AI init...\r\n");
+ if (ai_boostrap(data_activations) != 0) {
+	 printf("ai_bootstrap_fail\r\n");
+	 return;
+ }
 
-  if (ai_boostrap(data_activations0) != 0) {
-	printf("ai_boostrap FAILED\r\n");
-	return;
-  }
-
-  printf("ai_boostrap OK\r\n");
-
-#if (AI_NETWORK_IN_1_SIZE != AE_COLS) || (AI_NETWORK_OUT_1_SIZE != AE_OUT_DIM)
-  printf("!! DIM MISMATCH: in=%d vs %d, out=%d vs %d\r\n",
-		 (int)AI_NETWORK_IN_1_SIZE, (int)AE_COLS,
-		 (int)AI_NETWORK_OUT_1_SIZE, (int)AE_OUT_DIM);
-#endif
-    /* USER CODE END 5 */
+ printf("ai_bootstrap_ok\r\n");
 }
 
 void MX_X_CUBE_AI_Process(void)
 {
-    /* USER CODE BEGIN 6 */
-    /* USER CODE END 6 */
+ /* USER CODE BEGIN 6 */
+printf("ai_process\r\n");
+
+ printf("ai_run_before\r\n");
+
+ if (ai_run() != 0) {
+	 printf("ai_run_fail\r\n");
+	 return;
+ }
+
+ printf("ai_run_after\r\n");
+ /* USER CODE END 6 */
 }
 #ifdef __cplusplus
 }
