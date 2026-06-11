@@ -46,6 +46,7 @@
 #include <stdarg.h>
 #include "APP/network.h"
 #include <assert.h>
+#include "adc_user.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +56,7 @@ typedef struct __attribute__((packed)) {
     float amplitude;    // FFT 진폭
 } FftData_t;
 
-typedef struct { uint16_t volt_raw; uint16_t curr_raw; uint32_t t_us; } VIRead;
+//typedef struct { uint16_t volt_raw; uint16_t curr_raw; uint32_t t_us; } VIRead;
 
 FftData_t fft_packet[FFT_SIZE / 2];
 arm_rfft_fast_instance_f32 fftInstance;
@@ -96,6 +97,7 @@ typedef enum {
     RESP_KIND_SNAP,
     RESP_KIND_ACK,      
     RESP_KIND_RAW_BIN,  
+    RESP_KIND_LIGHT_ACK,
 } resp_kind_t;
 
 typedef struct {
@@ -270,6 +272,8 @@ static uint8_t  g_manual_override_light_on = 0;
 static uint32_t g_manual_override_until    = 0;
 static uint8_t  g_manual_override_no_timeout = 0;
 static uint8_t  g_manual_override_latch_off_on_expire = 0;
+static uint32_t g_last_light_control_tick = 0;
+static uint32_t g_scheduler_last_gap_ms = 0;
 static uint8_t  g_rtc_synced               = 0;
 static light_state_event_t g_light_event_q[LIGHT_STATE_EVENT_QUEUE_SIZE];
 static uint8_t  g_light_event_head = 0;
@@ -361,6 +365,7 @@ static light_event_sensor_cache_t g_light_sensor_cache = {0};
 #define NODE_INFO_TEXT_MAX 240
 #define LIGHT_TEST_10S_ENABLE    0
 #define LIGHT_TEST_10S_PERIOD_MS 10000u
+#define USER_SCHED_LOCAL_TEST    0
 #define CMD_ACK_RELAY 0x7E
 #define FOCUS_TIMING_LOG 0
 #if FOCUS_TIMING_LOG
@@ -376,6 +381,8 @@ static light_event_sensor_cache_t g_light_sensor_cache = {0};
 #define LIGHT_EVENT_REASON_RTC_UNSYNCED   6u
 #define LIGHT_EVENT_REASON_TEST           7u
 #define LIGHT_EVENT_REASON_NODE_CFG       8u
+
+#define SNAP_AFTER_LIGHT_CONTROL_HOLD_MS 3000u
 
 #define LIGHT_EVENT_VALID_LIGHT 0x01u
 #define LIGHT_EVENT_VALID_VI    0x02u
@@ -759,6 +766,7 @@ volatile uint32_t g_sec_tick = 0;
 volatile uint8_t started = 0;
 volatile uint8_t g_fault_inject = 0;
 volatile uint8_t g_adc_kick = 0;
+static volatile uint8_t g_schedule_alarm_due = 1u;
 
 /*static uint32_t ai_test_start = 0;
 static uint8_t  ai_test_done  = 0;
@@ -908,8 +916,8 @@ static uint16_t wisun_expected_packet_len(const uint8_t *buf, uint16_t have_len)
 static bool is_compact_snap_body(const uint8_t *data, uint16_t len);
 void reconfigure_snapshot_timer_from_cfg(void);
 void rtc_update(void);
-bool rtc_ensure_valid_or_set_default(void);
 void uart6_log(const char *fmt, ...);
+static void rtc_schedule_next_minute_alarm(void);
 
 //void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 /*void Transfer_ADC_To_DAC(void);*/
@@ -1422,6 +1430,22 @@ static void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_o
     __enable_irq();
 }
 
+static uint8_t light_ack_pending_in_resp_queue(void)
+{
+    uint8_t pending = 0u;
+
+    __disable_irq();
+    for (int i = 0; i < RESP_QUEUE_SIZE; ++i) {
+        if (g_resp_q[i].pending && g_resp_q[i].kind == RESP_KIND_LIGHT_ACK) {
+            pending = 1u;
+            break;
+        }
+    }
+    __enable_irq();
+
+    return pending;
+}
+
 static void light_state_event_poll(void)
 {
     static uint32_t last_try_tick = 0u;
@@ -1432,6 +1456,10 @@ static void light_state_event_poll(void)
     uint16_t msg_id;
 
     if (g_light_event_count == 0u || !node_is_provisioned()) {
+        return;
+    }
+
+    if (light_ack_pending_in_resp_queue()) {
         return;
     }
 
@@ -1547,10 +1575,11 @@ void light_on(void)
     g_light_on = after_on;
 
     if (before_on != after_on) {
-        timing_log("[TLOG_LIGHT] t=%lu action=ON before=%u after=%u\r\n",
+        timing_log("[TLOG_LIGHT] t=%lu action=ON before=%u after=%u sched_gap=%lu\r\n",
                    (unsigned long)HAL_GetTick(),
                    (unsigned)before_on,
-                   (unsigned)after_on);
+                   (unsigned)after_on,
+                   (unsigned long)g_scheduler_last_gap_ms);
     }
 
     light_state_event_note_if_changed(before_on, after_on);
@@ -1564,10 +1593,11 @@ void light_off(void)
     g_light_on = after_on;
 
     if (before_on != after_on) {
-        timing_log("[TLOG_LIGHT] t=%lu action=OFF before=%u after=%u\r\n",
+        timing_log("[TLOG_LIGHT] t=%lu action=OFF before=%u after=%u sched_gap=%lu\r\n",
                    (unsigned long)HAL_GetTick(),
                    (unsigned)before_on,
-                   (unsigned)after_on);
+                   (unsigned)after_on,
+                   (unsigned long)g_scheduler_last_gap_ms);
     }
 
     light_state_event_note_if_changed(before_on, after_on);
@@ -2006,6 +2036,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 light_event_set_reason(LIGHT_EVENT_REASON_CMD);
                 start_manual_override(on);
                 light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
+                g_last_light_control_tick = HAL_GetTick();
 
                 PowerCtrlAckBin_t ack = {0};
                 ack.t = 0x10;
@@ -2016,7 +2047,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 ack.light_on = light_is_on_logical();
 
                 schedule_resp_with_slot(
-                    RESP_KIND_RAW_BIN,
+                    RESP_KIND_LIGHT_ACK,
                     tmid,
                     msg_id,
                     (uint8_t*)&ack,
@@ -2031,6 +2062,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 light_event_set_reason(LIGHT_EVENT_REASON_CMD);
                 start_manual_override(0);
                 light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
+                g_last_light_control_tick = HAL_GetTick();
 
                 PowerCtrlAckBin_t ack = {0};
                 ack.t = 0x10;
@@ -2041,7 +2073,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 ack.light_on = light_is_on_logical();
 
                 schedule_resp_with_slot(
-                    RESP_KIND_RAW_BIN,
+                    RESP_KIND_LIGHT_ACK,
                     tmid,
                     msg_id,
                     (uint8_t*)&ack,
@@ -2600,6 +2632,7 @@ static uint8_t handle_cmd_set_rtc_kst(const uint8_t *data, uint16_t len)
     g_rtc_synced = 1u;
     rtc_update();
     update_sun_times();
+    rtc_schedule_next_minute_alarm();
     scheduler_poll();
     debug6("[RTC_SYNC] scheduler resumed\r\n");
     return 0;
@@ -3171,6 +3204,58 @@ void rtc_update(void)
     g_rtc_year  = 2000 + sDate.Year;   
     g_rtc_month = sDate.Month;
     g_rtc_day   = sDate.Date;
+}
+
+static void rtc_schedule_next_minute_alarm(void)
+{
+    RTC_TimeTypeDef now_time = {0};
+    RTC_DateTypeDef now_date = {0};
+    RTC_AlarmTypeDef alarm = {0};
+    uint8_t next_hour;
+    uint8_t next_min;
+
+    if (HAL_RTC_GetTime(&hrtc, &now_time, RTC_FORMAT_BIN) != HAL_OK) {
+        return;
+    }
+    if (HAL_RTC_GetDate(&hrtc, &now_date, RTC_FORMAT_BIN) != HAL_OK) {
+        return;
+    }
+
+    next_hour = now_time.Hours;
+    next_min = (uint8_t)(now_time.Minutes + 1u);
+    if (next_min >= 60u) {
+        next_min = 0u;
+        next_hour = (uint8_t)((next_hour + 1u) % 24u);
+    }
+
+    (void)HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_A);
+
+    alarm.AlarmTime.Hours = next_hour;
+    alarm.AlarmTime.Minutes = next_min;
+    alarm.AlarmTime.Seconds = 0u;
+    alarm.AlarmTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    alarm.AlarmTime.StoreOperation = RTC_STOREOPERATION_RESET;
+    alarm.AlarmMask = RTC_ALARMMASK_DATEWEEKDAY;
+    alarm.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
+    alarm.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
+    alarm.AlarmDateWeekDay = 1u;
+    alarm.Alarm = RTC_ALARM_A;
+
+    if (HAL_RTC_SetAlarm_IT(&hrtc, &alarm, RTC_FORMAT_BIN) != HAL_OK) {
+        uart6_log("[RTC_ALARM_SET_FAIL] now=%02u:%02u:%02u next=%02u:%02u:00\r\n",
+                  (unsigned)now_time.Hours,
+                  (unsigned)now_time.Minutes,
+                  (unsigned)now_time.Seconds,
+                  (unsigned)next_hour,
+                  (unsigned)next_min);
+    }
+}
+
+void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc_cb)
+{
+    if (hrtc_cb != NULL && hrtc_cb->Instance == RTC) {
+        g_schedule_alarm_due = 1u;
+    }
 }
 
 static void update_sun_times(void)
@@ -3908,6 +3993,10 @@ static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t ms
         (uint32_t)slot_idx * SLOT_LEN_MS +
         jitter;
 
+    if (kind == RESP_KIND_LIGHT_ACK) {
+        delay_ms = 0u;
+    }
+
     uint16_t cap = (uint16_t)sizeof(g_resp_q[0].buf);
 
     int free_idx = -1;
@@ -4088,7 +4177,6 @@ int main(void)
     }
     HAL_TIM_Base_Start(&htim2); 
     init_uid_string();
-    rtc_ensure_valid_or_set_default();
     g_rtc_synced = 0u;
     uint16_t stored_mid = MID_INVALID;
     bool mid_loaded = load_mid_from_flash(&stored_mid);
@@ -4109,8 +4197,44 @@ int main(void)
         (void)save_node_cfg_to_flash(&g_node_cfg);
     }
 
+#if USER_SCHED_LOCAL_TEST
+    {
+        RTC_TimeTypeDef test_time = {0};
+        RTC_DateTypeDef test_date = {0};
+
+        if (HAL_RTC_GetTime(&hrtc, &test_time, RTC_FORMAT_BIN) == HAL_OK &&
+            HAL_RTC_GetDate(&hrtc, &test_date, RTC_FORMAT_BIN) == HAL_OK) {
+            uint16_t now_min = (uint16_t)test_time.Hours * 60u + test_time.Minutes;
+            uint16_t on_min = (uint16_t)((now_min + 1u) % 1440u);
+            uint16_t off_min = (uint16_t)((now_min + 3u) % 1440u);
+
+            g_node_cfg.mode = 2u;
+            g_node_cfg.light_on_hour = (uint8_t)(on_min / 60u);
+            g_node_cfg.light_on_min = (uint8_t)(on_min % 60u);
+            g_node_cfg.light_off_hour = (uint8_t)(off_min / 60u);
+            g_node_cfg.light_off_min = (uint8_t)(off_min % 60u);
+            g_node_cfg.saving_mode = 0u;
+            g_manual_override_active = 0u;
+            g_manual_override_no_timeout = 0u;
+            g_manual_override_latch_off_on_expire = 0u;
+
+            uart6_log("[USER_SCHED_LOCAL_TEST] now=%02u:%02u:%02u on=%02u:%02u off=%02u:%02u flash_save=0\r\n",
+                      (unsigned)test_time.Hours,
+                      (unsigned)test_time.Minutes,
+                      (unsigned)test_time.Seconds,
+                      (unsigned)g_node_cfg.light_on_hour,
+                      (unsigned)g_node_cfg.light_on_min,
+                      (unsigned)g_node_cfg.light_off_hour,
+                      (unsigned)g_node_cfg.light_off_min);
+        } else {
+            uart6_log("[USER_SCHED_LOCAL_TEST] rtc_read_failed\r\n");
+        }
+    }
+#endif
+
     apply_mid_chan_from_cfg();
     reconfigure_snapshot_timer_from_cfg();
+    rtc_schedule_next_minute_alarm();
     g_light_on = light_is_on_logical();
     printf("[MIDCH_BOOT] mid=0x%04X ch=%u,%u assigned=%u (src=%s)\r\n",
 	   my_mid,  g_node_cfg.rch[0], g_node_cfg.rch[1], g_node_cfg.mid_assigned,
@@ -4140,11 +4264,17 @@ int main(void)
 	                   (unsigned long)t0, (unsigned long)t1, (unsigned long)(t1-t0));
 	  HAL_UART_Transmit(&huart6, (uint8_t*)b, n, 20);*/
 	         boot_poll();
-	         scheduler_poll();
+	         wisun_process_rx_mainloop();
+	         if (g_schedule_alarm_due) {
+	             g_schedule_alarm_due = 0u;
+	             rtc_update();
+	             update_sun_times();
+	             scheduler_poll();
+	             rtc_schedule_next_minute_alarm();
+	         }
+	         resp_slot_task_poll();
 	         light_state_event_poll();
 	         hop_tx_task_poll();
-	         resp_slot_task_poll();
-	         wisun_process_rx_mainloop();
 
 	         /* Debug FFT */
 
@@ -4256,17 +4386,21 @@ int main(void)
 	             now = HAL_GetTick();
 	             if ((int32_t)(now - g_snap_next_tick) >= 0)
 	             {
-	                 uart6_log("[SNAP_POLL] enable=%u prov=%u ready=%u paused=%u now=%lu next=%lu interval=%lu mid=%u\r\n",
-	                           (unsigned)g_snap_enable,
-	                           (unsigned)(node_is_provisioned() ? 1u : 0u),
-	                           (unsigned)(ultra_frame_ready ? 1u : 0u),
-	                           (unsigned)(ultra_sampling_paused ? 1u : 0u),
-	                           (unsigned long)now,
-	                           (unsigned long)g_snap_next_tick,
-	                           (unsigned long)g_snap_interval_ms,
-	                           (unsigned)my_mid);
-	                 Send_Monitoring_Snapshot_JSON(0);
-	                 g_snap_next_tick = now + g_snap_interval_ms;
+	                 if ((uint32_t)(now - g_last_light_control_tick) < SNAP_AFTER_LIGHT_CONTROL_HOLD_MS) {
+	                     g_snap_next_tick = now + 1000u;
+	                 } else {
+	                     uart6_log("[SNAP_POLL] enable=%u prov=%u ready=%u paused=%u now=%lu next=%lu interval=%lu mid=%u\r\n",
+	                               (unsigned)g_snap_enable,
+	                               (unsigned)(node_is_provisioned() ? 1u : 0u),
+	                               (unsigned)(ultra_frame_ready ? 1u : 0u),
+	                               (unsigned)(ultra_sampling_paused ? 1u : 0u),
+	                               (unsigned long)now,
+	                               (unsigned long)g_snap_next_tick,
+	                               (unsigned long)g_snap_interval_ms,
+	                               (unsigned)my_mid);
+	                     Send_Monitoring_Snapshot_JSON(0);
+	                     g_snap_next_tick = now + g_snap_interval_ms;
+	                 }
 	             }
 	         }
 	         else
@@ -4285,9 +4419,6 @@ int main(void)
 	         }
 
 	          //===================== RTC / SUN =====================
-	         rtc_update();
-	         update_sun_times();
-
 	         if ((uint32_t)(now - rtc_dbg_tick) >= 180000u) {
 	             char rtc_dbg[256];
 	             uint8_t mode_now = current_control_mode();
@@ -4419,13 +4550,17 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_BACKUPRESET_FORCE();
+  __HAL_RCC_BACKUPRESET_RELEASE();
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_HSE
                               |RCC_OSCILLATORTYPE_CSI;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.CSIState = RCC_CSI_ON;
   RCC_OscInitStruct.CSICalibrationValue = RCC_CSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -4687,8 +4822,6 @@ static void MX_RTC_Init(void)
   /* USER CODE END RTC_Init 0 */
 
   RTC_PrivilegeStateTypeDef privilegeState = {0};
-  RTC_TimeTypeDef sTime = {0};
-  RTC_DateTypeDef sDate = {0};
 
   /* USER CODE BEGIN RTC_Init 1 */
 
@@ -4722,45 +4855,15 @@ static void MX_RTC_Init(void)
   /* USER CODE BEGIN Check_RTC_BKUP */
   if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) != 0x32F2u)
   {
-    sTime.Hours = 0x0;
-    sTime.Minutes = 0x0;
-    sTime.Seconds = 0x0;
-    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-    {
-      Error_Handler();
-    }
-    sDate.WeekDay = RTC_WEEKDAY_MONDAY;
-    sDate.Month = RTC_MONTH_JANUARY;
-    sDate.Date = 0x1;
-    sDate.Year = 0x0;
-    if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
-    {
-      Error_Handler();
-    }
+    /* Keep RTC untouched. It will be set only by SET_RTC_KST. */
   }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
   */
-  sTime.Hours = 0x0;
-  sTime.Minutes = 0x0;
-  sTime.Seconds = 0x0;
-  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sDate.WeekDay = RTC_WEEKDAY_MONDAY;
-  sDate.Month = RTC_MONTH_JANUARY;
-  sDate.Date = 0x1;
-  sDate.Year = 0x0;
-  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  /* USER CODE BEGIN RTC_SKIP_FIXED_TIME */
+  /* Do not set a fixed RTC value during boot. */
+  /* USER CODE END RTC_SKIP_FIXED_TIME */
 
   /** Enable the TimeStamp
   */
@@ -4769,6 +4872,8 @@ static void MX_RTC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
+  HAL_NVIC_SetPriority(RTC_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(RTC_IRQn);
 
   /* USER CODE END RTC_Init 2 */
 
@@ -5140,15 +5245,29 @@ static void resp_slot_task_poll(void)
 
     int ready_idx = -1;
     uint32_t best_due = 0xFFFFFFFFu;
+    uint8_t best_priority = 0xFFu;
     
     __disable_irq();
     for (int i = 0; i < RESP_QUEUE_SIZE; ++i) {
+        uint8_t priority;
+
         if (!g_resp_q[i].pending) continue;
         if ((int32_t)(now - g_resp_q[i].due_tick) < 0) continue;
 
-        if (ready_idx < 0 || g_resp_q[i].due_tick < best_due) {
+        if (g_resp_q[i].kind == RESP_KIND_LIGHT_ACK) {
+            priority = 0u;
+        } else if (g_resp_q[i].kind == RESP_KIND_SNAP) {
+            priority = 2u;
+        } else {
+            priority = 1u;
+        }
+
+        if (ready_idx < 0 ||
+            priority < best_priority ||
+            (priority == best_priority && g_resp_q[i].due_tick < best_due)) {
             ready_idx = i;
             best_due = g_resp_q[i].due_tick;
+            best_priority = priority;
         }
     }
 
@@ -5201,8 +5320,9 @@ static void resp_slot_task_poll(void)
                 }
             }
 
-            if (!enqueue_transport_tx(g_resp_slot.tmid, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len, HOP_TTL_DEFAULT)) 
-            {
+            if (g_resp_slot.kind == RESP_KIND_LIGHT_ACK) {
+                (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
+            } else if (!enqueue_transport_tx(g_resp_slot.tmid, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len, HOP_TTL_DEFAULT)) {
                 (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
             }
         } else {
@@ -5266,40 +5386,6 @@ static bool is_compact_snap_body(const uint8_t *data, uint16_t len)
     return data != NULL &&
            len == SNAP_COMPACT_BODY_LEN &&
            data[0] == 0x01u;
-}
-
-bool rtc_ensure_valid_or_set_default(void)
-{
-    RTC_TimeTypeDef t = {0};
-    RTC_DateTypeDef d = {0};
-
-    if (HAL_RTC_GetTime(&hrtc, &t, RTC_FORMAT_BIN) != HAL_OK) return false;
-    if (HAL_RTC_GetDate(&hrtc, &d, RTC_FORMAT_BIN) != HAL_OK) return false;
-
-    
-    if (d.Year >= 24 && d.Month >= 1 && d.Month <= 12 && d.Date >= 1 && d.Date <= 31 &&
-        !(d.Year == 25 && d.Month == 12 && d.Date == 22) &&
-        !(d.Year == 26 && d.Month == 3 && d.Date == 24)) {
-        return false;
-    }
-
-    RTC_TimeTypeDef sTime = {0};
-    RTC_DateTypeDef sDate = {0};
-
-    sTime.Hours   = 11;
-    sTime.Minutes = 33;
-    sTime.Seconds = 0;
-
-    sDate.Year    = 26;              // 2026
-    sDate.Month   = RTC_MONTH_MAY; // 3
-    sDate.Date    = 04;
-    sDate.WeekDay = RTC_WEEKDAY_MONDAY;
-    
-    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) return false;
-    if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK) return false;
-    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2u);
-
-    return true;
 }
 
 void Vac_Ctrl(void) {
@@ -5603,10 +5689,39 @@ static void scheduler_poll(void)
     uint8_t managed = 0;
     uint32_t now_tick = HAL_GetTick();
     uint8_t control_mode = 0;
+    static uint32_t last_sched_tick = 0u;
+    static uint32_t last_sched_log_tick = 0u;
+    static uint8_t last_log_want_on = 0xFFu;
+    static uint8_t last_log_light_on = 0xFFu;
+    static uint8_t last_log_manual_active = 0xFFu;
+    uint32_t sched_gap = (last_sched_tick == 0u) ? 0u : (now_tick - last_sched_tick);
+    last_sched_tick = now_tick;
+    g_scheduler_last_gap_ms = sched_gap;
 
     if (g_manual_override_active) {
         if (g_manual_override_no_timeout ||
             ((int32_t)(now_tick - g_manual_override_until) < 0)) {
+            if (sched_gap >= 1000u ||
+                last_log_manual_active != g_manual_override_active ||
+                (uint32_t)(now_tick - last_sched_log_tick) >= 5000u) {
+                char msg[192];
+                int n = snprintf(msg, sizeof(msg),
+                                 "[SCHEDDBG_MANUAL] tick=%lu gap=%lu mode=%u manual=%u man_on=%u no_to=%u until=%lu light=%u\r\n",
+                                 (unsigned long)now_tick,
+                                 (unsigned long)sched_gap,
+                                 (unsigned)g_node_cfg.mode,
+                                 (unsigned)g_manual_override_active,
+                                 (unsigned)g_manual_override_light_on,
+                                 (unsigned)g_manual_override_no_timeout,
+                                 (unsigned long)g_manual_override_until,
+                                 (unsigned)light_is_on_logical());
+                if (n > 0) {
+                    HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)n, 50);
+                }
+                last_sched_log_tick = now_tick;
+                last_log_manual_active = g_manual_override_active;
+            }
+
             light_event_set_reason(g_manual_override_latch_off_on_expire ?
                                    LIGHT_EVENT_REASON_SET_FORCED :
                                    LIGHT_EVENT_REASON_CMD);
@@ -5700,6 +5815,43 @@ static void scheduler_poll(void)
     if (g_node_cfg.saving_mode &&
         time_window_contains(now_min, saving_start_min, saving_end_min)) {
         want_on = 0u;
+    }
+
+    {
+        uint8_t current_light = light_is_on_logical();
+        if (control_mode == 2u &&
+            (sched_gap >= 1000u ||
+             last_log_want_on != want_on ||
+             last_log_light_on != current_light ||
+             last_log_manual_active != g_manual_override_active ||
+             (uint32_t)(now_tick - last_sched_log_tick) >= 5000u)) {
+            char msg[256];
+            int n = snprintf(msg, sizeof(msg),
+                             "[SCHEDDBG] tick=%lu gap=%lu rtc=%02u:%02u:%02u mode=%u manual=%u man_on=%u no_to=%u until=%lu now_min=%u on=%u off=%u saving=%u want=%u light=%u\r\n",
+                             (unsigned long)now_tick,
+                             (unsigned long)sched_gap,
+                             (unsigned)t.Hours,
+                             (unsigned)t.Minutes,
+                             (unsigned)t.Seconds,
+                             (unsigned)control_mode,
+                             (unsigned)g_manual_override_active,
+                             (unsigned)g_manual_override_light_on,
+                             (unsigned)g_manual_override_no_timeout,
+                             (unsigned long)g_manual_override_until,
+                             (unsigned)now_min,
+                             (unsigned)on_min,
+                             (unsigned)off_min,
+                             (unsigned)g_node_cfg.saving_mode,
+                             (unsigned)want_on,
+                             (unsigned)current_light);
+            if (n > 0) {
+                HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)n, 50);
+            }
+            last_sched_log_tick = now_tick;
+            last_log_want_on = want_on;
+            last_log_light_on = current_light;
+            last_log_manual_active = g_manual_override_active;
+        }
     }
 
     light_event_set_reason((g_node_cfg.saving_mode && time_window_contains(now_min, saving_start_min, saving_end_min)) ? LIGHT_EVENT_REASON_SAVING : LIGHT_EVENT_REASON_SCHEDULE);

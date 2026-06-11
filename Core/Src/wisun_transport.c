@@ -8,6 +8,8 @@
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart6;
 
+#define WISUN_UART_TX_TIMEOUT_MS 100u
+
 void dbg_dump_uart6(const uint8_t *p, uint16_t n) {
     if (!p || !n) return;
 
@@ -31,7 +33,7 @@ void dbg_dump_uart6(const uint8_t *p, uint16_t n) {
 
 bool wisun_transport_send_blocking(const uint8_t *data, uint16_t len) {
     if (!data || !len) return false;
-    return HAL_UART_Transmit(&huart1, (uint8_t*)data, len, 1000) == HAL_OK;
+    return HAL_UART_Transmit(&huart1, (uint8_t*)data, len, WISUN_UART_TX_TIMEOUT_MS) == HAL_OK;
 }
 
 bool wisun_tx_adapter(const uint8_t *data, uint16_t len, void *user) {

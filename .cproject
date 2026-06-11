@@ -68,6 +68,9 @@
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Include"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\Target&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\ST\dev\CMSIS-DSP\Include&quot;"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.712910330" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -78,10 +81,9 @@
 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.1701986901" name="MCU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
 								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1072546902" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32H562RITX_FLASH.ld}" valueType="string"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories.188949491" name="Library search path (-L)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories" valueType="libPaths">
-									<listOptionValue builtIn="false" value="&quot;D:\CMSIS-DSP\build\lib&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/Middlewares/ST/AI/Lib&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;D:\Smart_OnDevice\SmartDevice\smart_device\Libs\CMSISDSP&quot;"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.4.0/Middlewares/Third_Party/ARM/DSP/Lib"/>
+									<listOptionValue builtIn="false" value="&quot;C:\ST\dev\CMSIS-DSP\build\lib&quot;"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.libraries.483743024" name="Libraries (-l)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.libraries" valueType="libs">
 									<listOptionValue builtIn="false" value="CMSISDSP"/>
@@ -107,6 +109,66 @@
 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.1078737112" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec"/>
 						</toolChain>
 					</folderInfo>
+					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.259708617.786086670" name="/" resourcePath="Core">
+						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.1940794171" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug" unusedChildren="">
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.563428184.516369231" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.563428184"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.462242107.847734100" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.462242107"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1629274562.1433013063" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1629274562"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1125642305.839154493" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1125642305"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.987711219.524829627" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.987711219"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.1021685990.38049962" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.1021685990"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.1763015691.236486339" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.1763015691"/>
+							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.1334136241.1768644580" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock.1334136241"/>
+							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.nanoprintffloat.631388952.1911363109" name="Use float with printf from newlib-nano (-u _printf_float)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.nanoprintffloat.631388952"/>
+							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.1808519228" name="MCU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.46698460">
+								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.700138709" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input"/>
+							</tool>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.550247234" name="MCU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1570229845" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" valueType="includePath">
+									<listOptionValue builtIn="false" value="../Core/Inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/Desktop/CMSIS-DSP/Include"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include\CMSIS\Core\Include&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include\dsp&quot;"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository//Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.4.0/Middlewares/Third_Party/ARM/DSP/Inc"/>
+									<listOptionValue builtIn="false" value="D:/Smart_OnDevice/SmartDevice/smart_device/X-CUBE-AI/App"/>
+									<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/Middlewares/ST/AI/Inc&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/X-CUBE-AI/Target&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/X-CUBE-AI&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;D:\Smart_OnDevice\SmartDevice\smart_device\X-CUBE-AI&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;D:\Smart_OnDevice\SmartDevice\smart_device\X-CUBE-AI\Target&quot;"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/CMSIS/Include"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Include"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Include"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\Target&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;C:\ST\dev\CMSIS-DSP\Include&quot;"/>
+								</option>
+								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.256425814" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
+							</tool>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.452254813" name="MCU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.1717689125"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.1784425283" name="MCU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.1701986901"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.1986753518" name="MCU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.1465526475"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.2033020745" name="MCU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.338918701"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.1850560621" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.320395144"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.1203992577" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.475258397"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.1283481023" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.604670430"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.1345700377" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.1213290522"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.1799934370" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.220991975"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.283065415" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.528406575"/>
+							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.1788803849" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.1078737112"/>
+						</toolChain>
+					</folderInfo>
 					<fileInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.259708617.1320825516" name="fft.c" rcbsApplicability="disable" resourcePath="Core/Src/fft.c" toolsToInvoke="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315.1970253806">
 						<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315.1970253806" name="MCU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315">
 							<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1448107702" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" valueType="includePath">
@@ -115,7 +177,7 @@
 								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
 								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
 								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Include"/>
-								<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;C:\ST\dev\CMSIS-DSP\Include&quot;"/>
 							</option>
 							<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.971850967" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 						</tool>
@@ -124,6 +186,35 @@
 						<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315.1724502348" name="MCU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1572656315">
 							<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.otherflags.370923571" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.otherflags" valueType="stringList">
 								<listOptionValue builtIn="false" value="-u _printf_float"/>
+							</option>
+							<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1246514604" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" valueType="includePath">
+								<listOptionValue builtIn="false" value="../Core/Inc"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/Desktop/CMSIS-DSP/Include"/>
+								<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include\CMSIS\Core\Include&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;C:\Users\nicek\Desktop\CMSIS-DSP\Include\dsp&quot;"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository//Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.4.0/Middlewares/Third_Party/ARM/DSP/Inc"/>
+								<listOptionValue builtIn="false" value="D:/Smart_OnDevice/SmartDevice/smart_device/X-CUBE-AI/App"/>
+								<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/Middlewares/ST/AI/Inc&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/X-CUBE-AI/Target&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;${ProjDirPath}/X-CUBE-AI&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;D:\Smart_OnDevice\SmartDevice\smart_device\X-CUBE-AI&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;D:\Smart_OnDevice\SmartDevice\smart_device\X-CUBE-AI\Target&quot;"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.0/Drivers/CMSIS/Include"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Include"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
+								<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Include"/>
+								<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\Target&quot;"/>
+								<listOptionValue builtIn="false" value="&quot;C:\ST\dev\CMSIS-DSP\Include&quot;"/>
 							</option>
 							<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.2108200506" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 						</tool>
@@ -135,11 +226,7 @@
 						</tool>
 					</fileInfo>
 					<sourceEntries>
-						<entry excluding="ST/" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name="Middlewares"/>
-						<entry excluding="App/ai_device_adaptor.c|App/aiTestUtility.c|App/aiTestHelper.c|App/aiSystemPerformance.c|App/lc_print.c|App/syscalls.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="X-CUBE-AI"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Library"/>
-						<entry excluding="Src/cbor_format.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
+						<entry excluding="X-CUBE-AI/App/syscalls.c|X-CUBE-AI/App/lc_print.c|X-CUBE-AI/App/aiTestHelper.c|X-CUBE-AI/App/ai_device_adaptor.c|X-CUBE-AI/App/aiTestUtility.c|X-CUBE-AI/App/aiSystemPerformance.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -198,6 +285,8 @@
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.5.1/Drivers/CMSIS/Include"/>
+									<listOptionValue builtIn="false" value="C:/ST/dev/CMSIS-DSP"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.233266736" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -230,11 +319,10 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="App/ai_device_adaptor.c|App/aiTestUtility.c|App/aiTestHelper.c|App/aiSystemPerformance.c|App/lc_print.c|App/syscalls.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="X-CUBE-AI"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Library"/>
 						<entry excluding="Src/cbor_format.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Library"/>
+						<entry excluding="App/ai_device_adaptor.c|App/aiTestUtility.c|App/aiTestHelper.c|App/aiSystemPerformance.c|App/lc_print.c|App/syscalls.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="X-CUBE-AI"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -287,6 +375,8 @@
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository//Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.4.0/Middlewares/Third_Party/ARM/DSP/Inc"/>
+									<listOptionValue builtIn="false" value="C:/ST/dev/CMSIS-DSP"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.367724940" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -371,6 +461,8 @@
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Device/ST/STM32H5xx/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository/STM32Cube_FW_H5_V1.2.0/Drivers/CMSIS/Include"/>
 									<listOptionValue builtIn="false" value="C:/Users/nicek/STM32Cube/Repository//Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.4.0/Middlewares/Third_Party/ARM/DSP/Inc"/>
+									<listOptionValue builtIn="false" value="C:/ST/dev/CMSIS-DSP"/>
+									<listOptionValue builtIn="false" value="&quot;C:\Smaled_On\SmartLED_Wisun_default\X-CUBE-AI\App&quot;"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.1435268258" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
