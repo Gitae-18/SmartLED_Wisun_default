@@ -725,6 +725,19 @@ static uint8_t  g_last_sun_month  = 0;
 static uint16_t g_last_sun_day    = 0;
 static uint8_t  g_last_sun_region = 0xFF;
 
+typedef struct {
+    uint8_t valid;
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint16_t sunrise_min;
+    uint16_t sunset_min;
+    uint16_t dawn_min;
+    uint16_t dusk_min;
+} gateway_sun_times_t;
+
+static gateway_sun_times_t g_gateway_sun_times = {0};
+
 static uint8_t  buf[PACKET_MAX_SIZE];
 
 uint32_t last_debug_tick = 0;
@@ -2527,6 +2540,85 @@ static uint8_t rtc_weekday_from_ymd(uint16_t year, uint8_t month, uint8_t day)
     }
 }
 
+static uint16_t u16_be(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint8_t sun_min_valid(uint16_t value)
+{
+    return (value < 1440u) ? 1u : 0u;
+}
+
+static uint8_t store_gateway_sun_times(uint16_t year, uint8_t month, uint8_t day, const uint8_t *data, uint16_t len)
+{
+    uint16_t sunrise;
+    uint16_t sunset;
+    uint16_t dawn;
+    uint16_t dusk;
+
+    if (data == NULL || len < 15u) {
+        g_gateway_sun_times.valid = 0u;
+        return 0u;
+    }
+
+    sunrise = u16_be(&data[7]);
+    sunset  = u16_be(&data[9]);
+    dawn    = u16_be(&data[11]);
+    dusk    = u16_be(&data[13]);
+
+    if (!sun_min_valid(sunrise) ||
+        !sun_min_valid(sunset) ||
+        !sun_min_valid(dawn) ||
+        !sun_min_valid(dusk)) {
+        g_gateway_sun_times.valid = 0u;
+        uart6_log("[RTC_SYNC_SUN_INVALID] sunrise=%u sunset=%u civilm=%u civile=%u\r\n",
+                  (unsigned)sunrise,
+                  (unsigned)sunset,
+                  (unsigned)dawn,
+                  (unsigned)dusk);
+        return 0u;
+    }
+
+    g_gateway_sun_times.valid = 1u;
+    g_gateway_sun_times.year = year;
+    g_gateway_sun_times.month = month;
+    g_gateway_sun_times.day = day;
+    g_gateway_sun_times.sunrise_min = sunrise;
+    g_gateway_sun_times.sunset_min = sunset;
+    g_gateway_sun_times.dawn_min = dawn;
+    g_gateway_sun_times.dusk_min = dusk;
+
+    uart6_log("[RTC_SYNC_SUN_RX] %04u-%02u-%02u sunrise=%u sunset=%u civilm=%u civile=%u\r\n",
+              (unsigned)year,
+              (unsigned)month,
+              (unsigned)day,
+              (unsigned)sunrise,
+              (unsigned)sunset,
+              (unsigned)dawn,
+              (unsigned)dusk);
+    return 1u;
+}
+
+static uint8_t apply_gateway_sun_times_if_current(void)
+{
+    if (!g_gateway_sun_times.valid) {
+        return 0u;
+    }
+
+    if (g_gateway_sun_times.year != g_rtc_year ||
+        g_gateway_sun_times.month != g_rtc_month ||
+        g_gateway_sun_times.day != g_rtc_day) {
+        return 0u;
+    }
+
+    g_sunrise_min = g_gateway_sun_times.sunrise_min;
+    g_sunset_min  = g_gateway_sun_times.sunset_min;
+    g_dawn_min    = g_gateway_sun_times.dawn_min;
+    g_dusk_min    = g_gateway_sun_times.dusk_min;
+    return 1u;
+}
+
 static uint8_t handle_cmd_set_rtc_kst(const uint8_t *data, uint16_t len)
 {
     RTC_TimeTypeDef sTime = {0};
@@ -2631,6 +2723,7 @@ static uint8_t handle_cmd_set_rtc_kst(const uint8_t *data, uint16_t len)
 
     g_rtc_synced = 1u;
     rtc_update();
+    (void)store_gateway_sun_times(year, month, day, data, len);
     update_sun_times();
     rtc_schedule_next_minute_alarm();
     scheduler_poll();
@@ -3266,6 +3359,31 @@ static void update_sun_times(void)
         return;
     if (g_rtc_day == 0 || g_rtc_day > 31)
         return;
+
+    if (apply_gateway_sun_times_if_current()) {
+        uint8_t sun_gw_should_log =
+            (g_rtc_year   != g_last_sun_year) ||
+            (g_rtc_month  != g_last_sun_month) ||
+            (g_rtc_day    != g_last_sun_day) ||
+            (g_region_code != g_last_sun_region);
+
+        g_last_sun_year   = g_rtc_year;
+        g_last_sun_month  = g_rtc_month;
+        g_last_sun_day    = g_rtc_day;
+        g_last_sun_region = g_region_code;
+
+        if (sun_gw_should_log && !focus_timing_log_enabled()) {
+            char buf[112];
+            int len = snprintf(buf, sizeof(buf),
+                "[SUN_GW] %04u-%02u-%02u region=%u SR=%u SS=%u DAWN=%u DUSK=%u\r\n",
+                g_rtc_year, g_rtc_month, g_rtc_day, g_region_code,
+                g_sunrise_min, g_sunset_min, g_dawn_min, g_dusk_min);
+            if (len > 0) {
+                HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, HAL_MAX_DELAY);
+            }
+        }
+        return;
+    }
  
     if (g_rtc_year   == g_last_sun_year   &&
         g_rtc_month  == g_last_sun_month  &&
