@@ -69,11 +69,7 @@ static inline double rad2deg(double r) { return r * (180.0 / M_PI); }
 // altitude_deg = -0.833 → sunrise/sunset
 // altitude_deg = -6     → civil dawn/dusk
 // ----------------------------------------------------
-static double calc_solar_event_utc(
-    int year, int month, int day,
-    double latitude, double longitude,
-    double altitude_deg,
-    int is_rise)
+static double calc_solar_event_utc( int year, int month, int day, double latitude, double longitude, double altitude_deg, int is_rise)
 {
     // 1) 요일 번호 계산
     int N1 = floor(275 * month / 9);
@@ -137,13 +133,7 @@ static double calc_solar_event_utc(
 // sunrise / sunset / civil dawn / civil dusk 계산
 // 결과는 "한국시간 기준 분 단위"로 반환
 // ----------------------------------------------------
-void compute_sun_times(
-    int year, int month, int day,
-    int region_code,
-    int *sunrise_min,
-    int *sunset_min,
-    int *dawn_min,
-    int *dusk_min)
+void compute_sun_times( int year, int month, int day, int region_code, int *sunrise_min, int *sunset_min, int *dawn_min, int *dusk_min)
 {
     double lat, lon;
     get_region_latlon(region_code, &lat, &lon);

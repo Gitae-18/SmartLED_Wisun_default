@@ -22,9 +22,7 @@ static void log_outgoing_snap_frame(const uint8_t *frame, uint16_t frame_len, si
     dbg_dump_uart6_with_tag("[WISUN_FRAME_TX_SNAP_FINAL]", frame, frame_len);
 }
 
-bool wisun_send_frame(const wisun_frame_cfg_t *cfg,
-                      const uint8_t *data, size_t data_len,
-                      wisun_tx_fn tx, void *user)
+bool wisun_send_frame(const wisun_frame_cfg_t *cfg, const uint8_t *data, size_t data_len, wisun_tx_fn tx, void *user)
 {
     if (!cfg || !data || !tx) return false;
     if (data_len > 255u) return false;
