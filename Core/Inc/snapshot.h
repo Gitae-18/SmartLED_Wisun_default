@@ -16,12 +16,12 @@ extern "C" {
 #define FFT_AMP_SCALE  1000.0f
 #define AI_MSE_SCALE   1000000.0f
 
-#define SNAP_FFT_VALID_AMP_MIN       5.0f
+#define SNAP_FFT_VALID_AMP_MIN       0.5f
 #define SNAP_FFT_VALID_FREQ_MIN_HZ   80000.0f
-#define SNAP_FFT_VALID_FREQ_MAX_HZ   130000.0f
-
+#define SNAP_FFT_VALID_FREQ_MAX_HZ   125000.0f
 #define SNAP_RING_SIZE  1
 #define SNAP_AFTER_LIGHT_CONTROL_HOLD_MS 3000u
+#define SNAP_SKIP_AFTER_LIGHT_EVENT_MS 30000u
 #define SNAP_USE_LEGACY_STRUCT_TEST 0
 #define SNAP_COMPACT_DIRECT_ENABLE 1
 
@@ -73,6 +73,7 @@ uint8_t snapshot_enabled(void);
 uint32_t snapshot_interval_ms(void);
 uint8_t snapshot_current_rtc_slot(uint32_t *slot);
 void snapshot_mark_tx(uint8_t was_response);
+void snapshot_note_light_event_tx(void);
 void snapshot_poll(uint32_t now,
                    uint8_t ultra_frame_ready,
                    uint8_t ultra_sampling_paused,

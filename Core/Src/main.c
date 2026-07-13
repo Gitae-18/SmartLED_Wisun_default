@@ -74,23 +74,6 @@ typedef enum {
     RECEIVING_PACKET
 } PacketParserState;
 
-typedef struct {
-    bool     pending;
-    uint8_t  which_idx;   
-    uint16_t nonce;
-    uint32_t due_tick;    
-} tx_task_t;
-
-typedef struct {
-    bool     pending;
-    uint32_t due_tick;
-    uint16_t nonce;
-    char     topic[16];
-    uint8_t  ok;
-
-    uint8_t  p_on_valid, p_on;   
-} resp_task_t;
-
 typedef enum {
     RESP_KIND_NONE = 0,
     RESP_KIND_SNAP,
@@ -114,14 +97,6 @@ typedef struct {
     uint8_t      has_raw_buf;  
 } resp_slot_t;
 
-typedef struct {
-    uint32_t start_after_ms;  // p.start_after_ms
-    uint32_t slot_len_ms;     // p.slot_len_ms
-    uint32_t jitter_ms;       // p.jitter_ms
-    uint16_t max_mid;         // p.max_mid
-    enum { ORDER_MID_DESC=0 } order;
-} resp_slot_cfg_t;
-
 typedef struct __attribute__((packed)) {
     uint8_t  t;       // 0x10 = generic_ack
     uint8_t  uid[12];
@@ -130,6 +105,42 @@ typedef struct __attribute__((packed)) {
     uint8_t  ok;      // 1=success, 0=fail
     int8_t   err_code;
 } AckBin_t;
+
+
+#define ASTRO_SETTING_V2_VERSION 0x02u
+#define ASTRO_SETTING_RESULT_T   0x46u
+
+typedef struct __attribute__((packed)) {
+    uint8_t  t;
+    uint8_t  uid[12];
+    uint32_t msg_id;
+    uint8_t  ok;
+    int8_t   err_code;
+    uint8_t  mode;
+    uint8_t  apply_coord_type;
+    int32_t  applied_lat_e7;
+    int32_t  applied_lon_e7;
+    uint16_t sunrise_min;
+    uint16_t sunset_min;
+    uint16_t dawn_min;
+    uint16_t dusk_min;
+} AstroSettingResultV2_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t  t;                  /* 0x10 */
+    uint8_t  uid[12];
+    uint32_t msg_id;
+    uint8_t  ok;
+    int8_t   err_code;
+    uint8_t  mode;
+    uint8_t  apply_coord_type;
+    int32_t  applied_lat_e7;
+    int32_t  applied_lon_e7;
+    uint16_t sunrise_min;
+    uint16_t sunset_min;
+    uint16_t dawn_min;
+    uint16_t dusk_min;
+} SetSettingAckV2_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t  t;       // 0x10 = power_ctrl_ack
@@ -152,181 +163,9 @@ typedef struct __attribute__((packed)) {
     uint8_t  light_on;     // 0/1    
        uint32_t msg_id;   
        uint8_t  ok;       // 1=success
-       int8_t   err_code; // 0=OK, 1=에러
+       int8_t   err_code; // 0=OK, 1=?�러
 } StatusBin_t;
 
-typedef struct __attribute__((packed)) {
-    uint8_t  t;        // 0x11 = slot_resp 
-    uint8_t  uid[12];  
-
-    uint16_t mid;     
-    uint8_t  ok;       // 1=success, 0=fail
-
-    uint8_t  has_on;   // g_resp.p_on_valid
-    uint8_t  on;       // g_resp.p_on (0/1)
-
-    uint16_t nonce;    // g_resp.nonce 
-} SlotRespBin_t;
-
-#pragma pack(push, 1)
-typedef struct {
-  uint8_t t;         // T_NODEINFO_BIN
-  uint8_t uid[12];
-  uint16_t msg_id;
-  uint8_t ok;
-  uint8_t gid;
-  uint16_t mid;
-  uint8_t dev;
-  uint8_t dsp;
-  uint8_t rch0, rch1;
-  uint8_t txp;
-  uint8_t mode;
-  uint8_t mac[8];
-  uint16_t fw_major, fw_minor;
-} NodeInfoBin_t;
-#pragma pack(pop)
-
-typedef struct {
-  uint8_t gid;        
-  uint8_t dev;
-  uint8_t dsp;
-  uint8_t rch0, rch1;
-  uint8_t txp;
-  uint8_t mode;
-  uint8_t mac[8];
-  uint16_t fw_major, fw_minor;
-  uint8_t valid;
-} node_info_cache_t;
-
-static node_info_cache_t g_node_info = {
-    .gid = 0,
-    .dev = 1,
-    .dsp = 1,
-    .txp = 13,
-    .rch0 = 0,
-    .rch1 = 0xFF,
-	.mode = 0,
-    .mac = {0},
-	.fw_major=0, .fw_minor=0,
-    .valid = 0
-};
-
-#define RESP_QUEUE_SIZE 4
-node_cfg_t g_node_cfg;
-hop_slot_t g_hop_q[HOP_QUEUE_SIZE];
-uint32_t g_hop_seen_keys[HOP_SEEN_TABLE_SIZE];
-uint8_t g_hop_seen_count;
-uint8_t g_hop_seen_pos;
-static resp_slot_t g_resp_slot;
-static resp_slot_t g_resp_q[RESP_QUEUE_SIZE];
-static AckBin_t g_nodeinfo_ack;
-static uint32_t g_last_light_control_tick = 0;
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-#define DEBUG_AT_TO_PC
-#define RX_BUFFER_SIZE 100
-#define PACKET_MAX_SIZE 256
-
-#define AT_LINE_Q_CAP   8
-#define AT_LINE_MAX     128
-
-#define T_NODEINFO_BIN  0x14
-
-#define UID_ADDRESS  ((uint32_t*) 0x08FFF800)
-#define __DCACHE_PRESENT 1U
-#define __ICACHE_PRESENT 1U
-//#define VREFINT_CAL_ADDR  ((uint16_t*) (0x08FFF810))
-//#define VREFINT_CAL_VALUE  (*VREFINT_CAL_ADDR)
-#define GOT_GID   (1u<<0)
-#define GOT_MID   (1u<<1)
-#define GOT_DEV   (1u<<2)
-#define GOT_DSP   (1u<<3)
-#define GOT_RCH   (1u<<4)
-#define GOT_TXP   (1u<<5)
-#define GOT_MODE  (1u<<6)
-#define GOT_MAC   (1u<<7)
-#define GOT_FWVER (1u<<8)
-
-#define GOT_ALL (GOT_GID|GOT_MID|GOT_DEV|GOT_DSP|GOT_RCH|GOT_TXP|GOT_MODE|GOT_MAC|GOT_FWVER)
-
-#ifndef FW_MAJOR
-#define FW_MAJOR 1
-#endif
-#ifndef FW_MINOR
-#define FW_MINOR 0
-#endif
-
-#define BASE_ALPHA        (0.0015f)
-#define NOISE_ALPHA       (0.01f)
-#define TRIG_K            (4.0f)
-#define TRIG_MARGIN       (0.005f)
-#define TRIG_HOLD_SAMPLES (32u)
-#define NOISE_MIN         (0.001f)
-
-#define FFT_SNR_K  5.0f
-#define FFT_NOISE_MIN    (1e-6f)
-
-#define SAMPLING_RATE 600000.0f
-
-#define PACKET_STX    0x02
-#define PACKET_ETX    0x03
-#define SIG1          0xAA
-#define SIG2          0xAB
-
-#define LIGHT_ON 0x10
-#define LIGHT_OFF 0x11
-#define SNAP_REPORT_CMD 0x12
-#define GET_STATUS 0x30
-#define SET_MID  0x01
-#define NODE_CFG 0x20
-#define SET_MID_CH  0x21
-#define FIRST_BOOT  0x22
-#define GETID       0x23
-#define SET_SETTING    0x31
-#define GET_NODE_INFO 0x40
-#define GET_CH 0x24
-#define SET_CH 0x25
-#define SET_POWER
-#define NODE_CFG_MAGIC      0x4E434647u   // 'N' 'C' 'F' 'G'
-#define T_GET_CH_RESP 0x24
-#define T_NODE_INFO_TEXT 0x40   
-#define NODE_INFO_TEXT_MAX 240
-#define LIGHT_TEST_10S_ENABLE    0
-#define LIGHT_TEST_10S_PERIOD_MS 10000u
-#define USER_SCHED_LOCAL_TEST    0
-#define CMD_ACK_RELAY 0x7E
-#define FOCUS_TIMING_LOG 0
-#define SNAP_FFT_ADC_RAW_SPAN_MIN   30u
-#define SNAP_FFT_VALID_AMP_MIN      0.5f
-#if FOCUS_TIMING_LOG
-#undef DEBUG_AT_TO_PC
-#endif
-
-
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t  t;
-    uint8_t  uid[12];
-    uint16_t msg_id;
-    uint8_t  ok;
-    int8_t   err_code;
-    uint8_t  ch;
-} GetChResp_t;
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t  t;          // 0x40
-    uint8_t  uid[12];    // uid12
-    uint16_t msg_id;     // 요청 msg_id 
-    uint8_t  ok;         // 1=성공, 0=실패
-    int8_t   err_code;   
-    uint16_t text_len;   
-    // uint8_t text[text_len];
-} NodeInfoTextHdr_t;
-#pragma pack(pop)
 
 typedef struct {
     uint8_t  pending;     
@@ -387,6 +226,8 @@ typedef struct {
 #define WISUN_IDLE_RESET_TIMEOUT_MS 70000u
 #endif
 
+#define RESP_QUEUE_SIZE 4
+
 #ifndef MID_INVALID
 #define MID_INVALID ((uint16_t)0xFFFF)
 #endif
@@ -401,9 +242,13 @@ typedef struct {
 
 
 typedef struct {
-    uint16_t len;
-    char     s[AT_LINE_MAX];
-} at_line_t;
+    uint8_t  valid;
+    uint16_t src_mid;
+    uint16_t target_mid;
+    uint8_t  cmd;
+    uint16_t msg_id;
+    uint32_t tick;
+} ctrl_dedup_entry_t;
 
 /* USER CODE END PD */
 
@@ -435,42 +280,32 @@ typedef char static_assert_AE_COLS_mismatch[
 extern ADC_HandleTypeDef hadc2;
 PacketParserState packet_state = WAITING_FOR_STX;
 
+static resp_slot_t g_resp_slot;
+static resp_slot_t g_resp_q[RESP_QUEUE_SIZE];
+
 static char     g_uid_str[40];
 static uint32_t uid_ram_local[3];
 static volatile bool     wisun_packet_ready = false;
 static volatile uint16_t wisun_packet_len   = 0;
 static volatile uint32_t wisun_packet_ready_tick = 0;
 static uint8_t           wisun_packet_shadow[PACKET_MAX_SIZE];
-static volatile uint16_t wisun_rx_need  = 0;
 static uint32_t          g_wisun_activity_tick = 0u;
 static volatile uint8_t g_wait_mid_query = 0;
-volatile uint32_t g_ultra_frame_tick = 0;
 //static uint8_t capturing = 0;
 
 static float ai_mse = 0.0f;
 static int ai_pred = 0;
-static char at_accum[256];
-static uint16_t at_accum_len = 0;
 
 // static bool on_done_today  = false;
 // static bool off_done_today = false;
 
-// ?�짜 바�????�래�?리셋??
-// static uint8_t sched_last_day = 0xFF;
-
 static nodeinfo_ctx_t g_nodeinfo = {0};
-
-static uint8_t g_nodeinfo_txbuf[sizeof(NodeInfoTextHdr_t) + NODE_INFO_TEXT_MAX];
 
 //static const float K_VIN     = K_ADC2V * V_DIV_GAIN;                        // raw ??Vin(V)
 //static const float K_CURR    = K_ADC2V / (R_SHUNT * I_AMP_GAIN);
 //static volatile uint16_t adc_buffer[FFT_TOTAL_SAMPLES];
-static volatile int      sample_index = 0;
-static volatile resp_task_t g_resp = {0};
-volatile uint8_t adc_done = 0;
 volatile uint32_t g_monitor_count = 0;
 static volatile int       wr_idx           = 0;
-static volatile size_t   ultra_idx = 0;
 static volatile bool     ultra_frame_ready = false;
 static volatile bool     ultra_sampling_paused = false;
 
@@ -480,40 +315,22 @@ volatile uint32_t g_frame_c1 = 0;
 volatile uint32_t g_dma_done = 0;
 volatile uint32_t g_dma_half = 0;
 
-static float baseline = 0.0f;
-static float noise_level = 0.01f;  
-static uint8_t trig_on = 0;
-static uint16_t trig_hold = 0;
 static float32_t g_hann[FFT_SIZE];
 static uint8_t g_hann_inited = 0;
 
 static volatile uint8_t  g_ai_sample_ready = 0;
 static volatile float    g_ai_sample = 0.0f;
 
-volatile uint32_t g_adc_isr_cnt = 0;
-volatile uint32_t g_trig_fire_cnt = 0;
-volatile uint32_t g_frame_ready_cnt = 0;
-volatile float    g_last_dev = 0.0f, g_last_thr = 0.0f, g_last_noise = 0.0f;
-volatile uint16_t g_last_wr = 0;
-volatile uint8_t  g_last_cap = 0;
-
 static uint16_t uart_fail_cnt   = 0;
-static volatile uint32_t t_frame_start_us = 0;
-static uint8_t pa12_state = 0;
-static volatile uint32_t t_frame_end_us   = 0;
-volatile uint8_t receive_flag = 0;
-volatile uint32_t tick_start = 0, tick_end = 0;
 volatile uint32_t uid_ram[3];
-volatile uint16_t g_last_rx_tmid = 0;
-volatile uint8_t ai_ready = 0;
 volatile uint8_t  ai_pending = 0;
 uint32_t          ai_next_run = 0;      
 uint32_t          ai_period_ms = 200;   
-uint32_t          ai_budget_ms = 10;
-static uint32_t g_last_msg_id      = 0;
-static int      g_last_cmd         = -1;
 static uint8_t  g_last_has_msg_id  = 0;
 static uint8_t  g_last_has_cmd     = 0;
+static ctrl_dedup_entry_t g_ctrl_dedup[CTRL_DEDUP_CACHE_SIZE];
+static uint8_t g_ctrl_dedup_pos = 0u;
+static volatile uint8_t g_snapshot_suppress_next_tx = 0u;
 
 static uint8_t boot_cfg_started = 0;
 
@@ -524,35 +341,14 @@ static volatile uint8_t  g_at_line_ready = 0;
 static uint16_t          g_at_line_len   = 0;
 static char              g_at_line[RX_BUFFER_SIZE];
 
-static volatile uint8_t  at_q_w = 0;
-static volatile uint8_t  at_q_r = 0;
-static at_line_t         at_q[AT_LINE_Q_CAP];
-
 static char ascii_buffer[RX_BUFFER_SIZE];
 static uint16_t ascii_index = 0;
 
-bool fft_data_sent = false;
-
-static uint8_t g_nodeinfo_seen_fwver = 0;
-static uint8_t g_nodeinfo_wait_final_ok = 0;
-
-uint8_t last_received_packet[RX_BUFFER_SIZE];
-uint16_t last_received_len = 0;
-uint8_t rxBuffer[100];
-uint8_t ADCFlag = 0;
 uint8_t rxByte, rxByte1;
-uint8_t wisun_rx;
-uint8_t pcBuffer[RX_BUFFER_SIZE];
 uint8_t pc_rx_buffer[RX_BUFFER_SIZE];
 uint8_t wisun_rx_buffer[RX_BUFFER_SIZE];
-uint8_t tx_forward_buffer[RX_BUFFER_SIZE];
 uint8_t pc_rx_index = 0;
 uint8_t wisun_rx_index = 0;
-uint8_t packet_buffer[256];
-uint8_t packet_index = 0;
-uint8_t wisun_packet_index = 0;
-uint8_t packet_mode = 0;
-uint8_t send_count = 0;
 uint8_t g_region_code;
 
 uint16_t g_sunrise_min;
@@ -569,44 +365,17 @@ static uint8_t  g_last_sun_region = 0xFF;
 
 static uint8_t  buf[PACKET_MAX_SIZE];
 
-uint32_t last_debug_tick = 0;
-
-uint32_t prev_tick = 0;
-uint32_t final_response[100];
 uint16_t sunrise, sunset, dawn, dusk;
-uint16_t vrefint_adc;
-uint16_t adc_dma_buffer[FFT_SIZE];
 uint16_t my_mid = 0x0000;
 uint16_t target_mid = 0;
-uint16_t adc_raw_volt = 0;
-uint16_t adc_raw_curr = 0;
-uint16_t adc_raw_temp = 0;
 uint16_t raw_buffer[FFT_SIZE];
-uint16_t loaded;
 
-float32_t inputSignal[FFT_SIZE];
 float32_t outputSignal[FFT_SIZE];
 float32_t magnitude[FFT_SIZE / 2];
-float32_t totalMagnitude = 0;
-float32_t energy = 0;
-float32_t I_OFFSET_VOLT = 0.0f;
-uint32_t last_tick = 0;
 
 static uint16_t prev_dawn = 0xFFFF;
 static uint16_t prev_dusk = 0xFFFF;
 
-char debug_msg[64];
-char wisun_mid[10] = {0};
-char wisun_mac[20] = {0};
-
-volatile uint8_t sendIDFlag = 0;
-volatile uint8_t request_step = 0;
-volatile uint16_t adc_index = 0;
-volatile uint8_t fft_ready;
-volatile uint8_t packet_flag = 0;
-volatile uint32_t g_sec_tick = 0;
-volatile uint8_t started = 0;
-volatile uint8_t g_fault_inject = 0;
 volatile uint8_t g_adc_kick = 0;
 /*static uint32_t ai_test_start = 0;
 static uint8_t  ai_test_done  = 0;
@@ -632,45 +401,34 @@ static void MX_RTC_Init(void);
 static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
-void ADC1_Start_Regular_IN18_IT(void);
 static void apply_mid(uint16_t new_mid);
 static void apply_rch(uint8_t r0, uint8_t r1);
 static void apply_mid_chan_from_cfg(void);
 static void ai_service(void);
-static inline uint8_t at_q_next(uint8_t x);
-static inline uint8_t at_q_is_full(void);
-static inline uint8_t at_q_is_empty(void);
-static void at_accum_reset(void);
 static bool is_uplink_report_cmd(uint8_t cmd);
 void boot_poll(void);
 //static void build_snapshot_packet(cbor_packet_t* rp, const snapshot_t* s, bool as_resp, const char* topic, uint16_t nonce);
 // float Convert_ADC_To_Current(uint32_t adc_value);
 void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid);
-void debug_print_boot_info(uint16_t stored_mid);
 static inline void DWT_CYCCNT_Init(void);
 void Debug_Print_FFT_Peak(void);
 void ExtractFullFFT(const float32_t *in, float fs_hz, FftData_t *dest);
 static void ExtractFullFFT_MagOnly(const float32_t *in, float32_t *mag_out);
-void Format_UID(char *msg, size_t size);
-static uint16_t find_first_zero(const uint8_t *p, uint16_t n);
+static float tim6_sample_rate_hz(void);
 static void init_uid_string(void);
-// static inline int is_night(int now, int dusk, int dawn);
 static bool is_bootstrap_cmd(uint8_t cmd);
 void Input_Ai_Model(float v);
-void Input_Ai_Model_Features(float freq_khz, float adc_pk, float current, float vin);
 static void InitHannWindowOnce(void);
-uint32_t Get_Device_ID(void);
-float Get_Calibrated_Vref(void);
-float Get_Offset_Voltage(void);
 //void StreetLight_ToggleTask(void);
-static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, const uint8_t *data, uint16_t len);
+static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, uint16_t target_mid, const uint8_t *data, uint16_t len);
 static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len);
+static uint8_t handle_cmd_set_astro_setting(const uint8_t *data, uint16_t len);
+static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id);
 static void mid_pack_uid12(uint8_t out12[12]);
 static uint16_t my_strnlen(const char *s, uint16_t maxn);
 bool node_is_provisioned(void);
 static int nodeinfo_append_kv_line(const char *line);
 static void nodeinfo_start(uint16_t tmid, uint16_t msg_id);
-static void nodeinfo_send_err(uint16_t tmid, uint16_t msg_id, int8_t err_code);
 void nodeinfo_collect_line(const char *line);
 static void nodeinfo_cache_update_from_kv(const char *kv_line);
 static void nodeinfo_finish_and_send(uint8_t ok, int8_t err_code);
@@ -692,7 +450,7 @@ void Read_UID(void);
 static void Read_UID_local(void);
 void resp_slot_task_poll(void);
 // void readADCData(void);
-void rtc_minute_tick(uint8_t hour, uint8_t min);
+void rtc_scheduler_fallback_poll(uint32_t now);
 static void rstrip_inplace(char *s);
 static void wisun_activity_mark(uint32_t now);
 static void wisun_idle_reset_poll(uint32_t now);
@@ -702,16 +460,14 @@ static void wisun_idle_reset_poll(uint32_t now);
 // void SendFFT_Packet(uint16_t target_mid, FftData_t *fft_data, uint8_t count);
 // void SendDataPacket(uint16_t target_mid, uint8_t *data, uint16_t data_length);
 void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id);
+void snapshot_suppress_next_tx(void);
 static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t msg_id, const uint8_t *raw, uint16_t raw_len);
 //static bool send_wisun_resp(uint16_t tmid, const uint8_t *cbor, size_t cbor_len);
 static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len);
-static void send_resp_now_from_task(void);
-void tx_task_poll(void);
 void Ultra_ResumeNextFrame(void);
 void Ultra_StartSampling(void);
 void Ultra_StartDmaFrame(void);
 void update_sun_times(void);
-void wisun_toss_packet(uint16_t tmid, const uint8_t *rx, uint16_t rx_len);
 void wisun_process_rx_mainloop(void);
 static inline uint16_t xorshift16(uint16_t x);
 static uint16_t wisun_expected_packet_len(const uint8_t *buf, uint16_t have_len);
@@ -896,11 +652,6 @@ uint8_t send_transport_direct(uint16_t target_mid, uint8_t ttl, uint8_t cmd, uin
     return send_wisun_binary(0x0000u, payload, payload_len) ? 1u : 0u;
 }
 
-static void at_accum_reset(void) {
-    at_accum_len = 0;
-    at_accum[0] = '\0';
-}
-
 bool node_is_provisioned(void)
 {
     // my_mid�??��? ?�역?�로 ?�고 ?�으?�까 그거�??�용
@@ -920,26 +671,6 @@ static bool is_bootstrap_cmd(uint8_t cmd)
     }
 }
 
-static inline void InvalidateDCacheByAddr(uint32_t *addr, int32_t dsize) {
-    if (SCB->CCR & SCB_CCR_DC_Msk) {
-        int32_t linesize = 32;  // 보통 Cortex-M33 32-byte cache line
-        uint32_t start = (uint32_t)addr & ~(linesize - 1);
-        uint32_t end = ((uint32_t)addr + dsize + linesize - 1) & ~(linesize - 1);
-        for (uint32_t p = start; p < end; p += linesize) {
-            __DSB();
-            SCB->DCIMVAC = p;
-        }
-        __DSB();
-        __ISB();
-    }
-}
-
-
-static uint16_t find_first_zero(const uint8_t *p, uint16_t n)
-{
-    for (uint16_t i = 0; i < n; i++) if (p[i] == 0x00) return i;
-    return 0xFFFF;
-}
 
 void boot_poll(void)
 {
@@ -1067,7 +798,45 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 
 
-static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, const uint8_t *data, uint16_t len)
+static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (msg_id == 0u) {
+        return 0u;
+    }
+
+    for (uint8_t i = 0u; i < CTRL_DEDUP_CACHE_SIZE; ++i) {
+        ctrl_dedup_entry_t *e = &g_ctrl_dedup[i];
+
+        if (!e->valid) {
+            continue;
+        }
+
+        if ((uint32_t)(now - e->tick) > CTRL_DEDUP_TTL_MS) {
+            e->valid = 0u;
+            continue;
+        }
+
+        if (e->target_mid == target_mid &&
+            e->cmd == cmd &&
+            e->msg_id == msg_id) {
+            return 1u;
+        }
+    }
+
+    g_ctrl_dedup[g_ctrl_dedup_pos].valid = 1u;
+    g_ctrl_dedup[g_ctrl_dedup_pos].src_mid = src_mid;
+    g_ctrl_dedup[g_ctrl_dedup_pos].target_mid = target_mid;
+    g_ctrl_dedup[g_ctrl_dedup_pos].cmd = cmd;
+    g_ctrl_dedup[g_ctrl_dedup_pos].msg_id = msg_id;
+    g_ctrl_dedup[g_ctrl_dedup_pos].tick = now;
+    g_ctrl_dedup_pos = (uint8_t)((g_ctrl_dedup_pos + 1u) % CTRL_DEDUP_CACHE_SIZE);
+
+    return 0u;
+}
+
+static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, uint16_t target_mid, const uint8_t *data, uint16_t len)
 {
     uint8_t uid12[12];
     mid_pack_uid12(uid12);
@@ -1260,8 +1029,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 float vin_v = 0.0f, i_adc_v = 0.0f;
 
                 if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-                    vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-                    i_adc_v = (float)vi.curr_raw * K_ADC2V;
+                    vin_v   = adc_raw_to_dc_vin(vi.volt_raw);
+                    i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
                     vi_ok = 1;
                 }
 
@@ -1329,29 +1098,85 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
             }
             case SET_SETTING:
             {
-            	uint8_t result = handle_cmd_set_setting(data, len);  
-				
-				AckBin_t ack = {0};
-				ack.t = 0x10;     
-				uint8_t uid12[12];
-				mid_pack_uid12(uid12);
-				memcpy(ack.uid, uid12, 12);
+                uint8_t duplicate = ctrl_dedup_check_and_mark(tmid, target_mid, cmd, msg_id);
+                uint8_t result = duplicate ? 0u : handle_cmd_set_setting(data, len);
 
-				ack.msg_id   = msg_id;         
-				ack.ok       = (result == 0) ? 1 : 0;
-				ack.err_code = (int8_t)result; 
-			
-				schedule_resp_with_slot(
-					RESP_KIND_ACK,
-					tmid,               
-					msg_id,
-					(uint8_t*)&ack,
-					sizeof(ack)
-				);
+                if (duplicate) {
+                    uart6_log("[SET_SETTING_DUP] src=0x%04X target=0x%04X msg_id=%u skip_apply=1\r\n",
+                              (unsigned)tmid,
+                              (unsigned)target_mid,
+                              (unsigned)msg_id);
+                }
 
-				debug6("[ACK_SLOT] pending ACK scheduled\r\n");
+                SetSettingAckV2_t ack = {0};
+                uint8_t uid12[12];
+                mid_pack_uid12(uid12);
 
-				break;
+                ack.t = 0x10u;
+                memcpy(ack.uid, uid12, 12);
+                ack.msg_id = msg_id;
+                ack.ok = (result == 0u) ? 1u : 0u;
+                ack.err_code = (int8_t)result;
+                ack.mode = g_node_cfg.mode;
+                ack.apply_coord_type = g_node_cfg.apply_coord_type;
+                ack.applied_lat_e7 = (g_node_cfg.apply_coord_type == 1u)
+                    ? g_node_cfg.install_lat_e7 : g_node_cfg.standard_lat_e7;
+                ack.applied_lon_e7 = (g_node_cfg.apply_coord_type == 1u)
+                    ? g_node_cfg.install_lon_e7 : g_node_cfg.standard_lon_e7;
+                ack.sunrise_min = g_sunrise_min;
+                ack.sunset_min = g_sunset_min;
+                ack.dawn_min = g_dawn_min;
+                ack.dusk_min = g_dusk_min;
+
+                schedule_resp_with_slot(
+                    RESP_KIND_RAW_BIN,
+                    tmid,
+                    msg_id,
+                    (uint8_t *)&ack,
+                    sizeof(ack)
+                );
+
+                debug6("[ACK_SLOT] extended SET_SETTING ACK scheduled\r\n");
+                break;
+            }
+            case SET_ASTRO_SETTING:
+            {
+                uint8_t duplicate = ctrl_dedup_check_and_mark(tmid, target_mid, cmd, msg_id);
+                uint8_t result = duplicate ? 0u : handle_cmd_set_astro_setting(data, len);
+
+                if (duplicate) {
+                    uart6_log("[SET_ASTRO_DUP] src=0x%04X target=0x%04X msg_id=%u skip_apply=1\r\n",
+                              (unsigned)tmid,
+                              (unsigned)target_mid,
+                              (unsigned)msg_id);
+                }
+
+                AstroSettingResultV2_t ack = {0};
+                ack.t = ASTRO_SETTING_RESULT_T;
+                memcpy(ack.uid, uid12, 12);
+                ack.msg_id = msg_id;
+                ack.ok = (result == 0u) ? 1u : 0u;
+                ack.err_code = (int8_t)result;
+                ack.mode = g_node_cfg.mode;
+                ack.apply_coord_type = g_node_cfg.apply_coord_type;
+                ack.applied_lat_e7 = (g_node_cfg.apply_coord_type == 1u)
+                    ? g_node_cfg.install_lat_e7 : g_node_cfg.standard_lat_e7;
+                ack.applied_lon_e7 = (g_node_cfg.apply_coord_type == 1u)
+                    ? g_node_cfg.install_lon_e7 : g_node_cfg.standard_lon_e7;
+                ack.sunrise_min = g_sunrise_min;
+                ack.sunset_min = g_sunset_min;
+                ack.dawn_min = g_dawn_min;
+                ack.dusk_min = g_dusk_min;
+
+                schedule_resp_with_slot(
+                    RESP_KIND_RAW_BIN,
+                    tmid,
+                    msg_id,
+                    (uint8_t*)&ack,
+                    sizeof(ack)
+                );
+
+                break;
             }
             case SET_RTC_KST:
             {
@@ -1373,8 +1198,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 }
 
                 /*
-                * 정상 RTC payload는 year_hi/year_lo로 시작해야 함.
-                * data[0] == 0x2B이면 0x2B + UID + msg_id + ok + err 형태의 ACK payload일 가능성이 큼.
+                * ?�상 RTC payload??year_hi/year_lo�??�작?�야 ??
+                * data[0] == 0x2B?�면 0x2B + UID + msg_id + ok + err ?�태??ACK payload??가?�성????
                 */
                 if (data != NULL && len >= 19u && data[0] == 0x2Bu) {
                     uart6_log("[RTC_SYNC_DROP] reason=rtc_ack_like_payload len=%u data0=0x%02X\r\n",
@@ -1447,20 +1272,19 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
         }
 }
 
-static void nodeinfo_send_err(uint16_t tmid, uint16_t msg_id, int8_t err_code)
+static int32_t i32_be_at(const uint8_t *p)
 {
-    char msg[32];
-    int n = snprintf(msg, sizeof(msg), "ERR=%d\n", (int)err_code);
-    if (n < 0) n = 0;
-    if (n > (int)sizeof(msg)) n = sizeof(msg);
+    uint32_t u = ((uint32_t)p[0] << 24) |
+                 ((uint32_t)p[1] << 16) |
+                 ((uint32_t)p[2] << 8) |
+                 ((uint32_t)p[3]);
+    return (int32_t)u;
+}
 
-    schedule_resp_with_slot(
-        RESP_KIND_RAW_BIN,
-        tmid,
-        msg_id,
-        (uint8_t*)msg,
-        (uint16_t)n
-    );
+static uint8_t coord_e7_valid(int32_t lat_e7, int32_t lon_e7)
+{
+    return (lat_e7 >= -900000000L && lat_e7 <= 900000000L &&
+            lon_e7 >= -1800000000L && lon_e7 <= 1800000000L) ? 1u : 0u;
 }
 
 static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
@@ -1510,6 +1334,28 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
         }
     }
     
+    /* Optional unified coordinate extension, appended after the legacy 20-byte payload:
+     * [20] coord_present, [21] apply_coord_type, [22..25] lat_e7 BE, [26..29] lon_e7 BE.
+     * Only the selected coordinate pair is updated; the other stored pair is preserved. */
+    if (len >= 30u && data[20] != 0u) {
+        uint8_t apply_coord_type = data[21];
+        int32_t selected_lat_e7 = i32_be_at(&data[22]);
+        int32_t selected_lon_e7 = i32_be_at(&data[26]);
+
+        if (apply_coord_type > 1u) return 3u;
+        if (!coord_e7_valid(selected_lat_e7, selected_lon_e7)) return 4u;
+
+        g_node_cfg.coord_enable = 1u;
+        g_node_cfg.apply_coord_type = apply_coord_type;
+        if (apply_coord_type == 0u) {
+            g_node_cfg.standard_lat_e7 = selected_lat_e7;
+            g_node_cfg.standard_lon_e7 = selected_lon_e7;
+        } else {
+            g_node_cfg.install_lat_e7 = selected_lat_e7;
+            g_node_cfg.install_lon_e7 = selected_lon_e7;
+        }
+    }
+
     g_node_cfg.on_off_mode        = on_off_mode;
     g_node_cfg.on_corr_mode       = on_corr_mode;
     g_node_cfg.on_corr_time_min   = on_corr_time;
@@ -1536,6 +1382,7 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
 
     if (g_node_cfg.mode == 3u) {
         start_forced_time_control(forced_time);
+        g_last_light_control_tick = HAL_GetTick();
     } else {
         light_control_clear_manual_override();
     }
@@ -1543,10 +1390,15 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
     snapshot_reconfigure_timer_from_cfg();
 
     if (!save_node_cfg_to_flash(&g_node_cfg)) {
-		result = 2;
-	} else {
-		result = 0;
-	}
+        result = 2u;
+    } else {
+        result = 0u;
+        if (len >= 30u && data[20] != 0u) {
+            g_last_sun_year = 0u;
+            update_sun_times();
+            scheduler_poll();
+        }
+    }
 	char msg[160];
 	    snprintf(msg, sizeof(msg),
 	             "[SET_SETTING] result=%d len=%u mode=%u on=%02u:%02u off=%02u:%02u save=%u %02u:%02u-%02u:%02u forced=%u snap=%u interval=%us\r\n",
@@ -1567,6 +1419,56 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
 	             (unsigned)g_node_cfg.snap_interval_sec);
 	    debug6(msg);
 	return result;
+}
+
+static uint8_t handle_cmd_set_astro_setting(const uint8_t *data, uint16_t len)
+{
+    uint8_t apply_coord_type;
+    int32_t standard_lat_e7;
+    int32_t standard_lon_e7;
+    int32_t install_lat_e7;
+    int32_t install_lon_e7;
+    int32_t selected_lat_e7;
+    int32_t selected_lon_e7;
+    uint8_t result;
+
+    /* 0x45 coordinate-only payload: 17 bytes, big-endian coordinates. */
+    if (data == NULL || len != 17u) return 1u;
+
+    apply_coord_type = data[0];
+    if (apply_coord_type > 1u) return 2u;
+
+    standard_lat_e7 = i32_be_at(&data[1]);
+    standard_lon_e7 = i32_be_at(&data[5]);
+    install_lat_e7 = i32_be_at(&data[9]);
+    install_lon_e7 = i32_be_at(&data[13]);
+
+    if (!coord_e7_valid(standard_lat_e7, standard_lon_e7) ||
+        !coord_e7_valid(install_lat_e7, install_lon_e7)) return 3u;
+
+    selected_lat_e7 = apply_coord_type ? install_lat_e7 : standard_lat_e7;
+    selected_lon_e7 = apply_coord_type ? install_lon_e7 : standard_lon_e7;
+
+    g_node_cfg.coord_enable = 1u;
+    g_node_cfg.apply_coord_type = apply_coord_type;
+    g_node_cfg.standard_lat_e7 = standard_lat_e7;
+    g_node_cfg.standard_lon_e7 = standard_lon_e7;
+    g_node_cfg.install_lat_e7 = install_lat_e7;
+    g_node_cfg.install_lon_e7 = install_lon_e7;
+
+    result = save_node_cfg_to_flash(&g_node_cfg) ? 0u : 4u;
+    if (result == 0u) {
+        g_last_sun_year = 0u;
+        update_sun_times();
+        scheduler_poll();
+    }
+
+    uart6_log("[SET_ASTRO] result=%u len=%u type=%u selected=%ld,%ld sun=%u/%u civil=%u/%u\r\n",
+              (unsigned)result, (unsigned)len, (unsigned)apply_coord_type,
+              (long)selected_lat_e7, (long)selected_lon_e7,
+              (unsigned)g_sunrise_min, (unsigned)g_sunset_min,
+              (unsigned)g_dawn_min, (unsigned)g_dusk_min);
+    return result;
 }
 
 static uint16_t wisun_expected_packet_len(const uint8_t *buf, uint16_t have_len)
@@ -1602,48 +1504,12 @@ static int norm_min(int t)
 }
 
 
-void ADC1_Start_Regular_IN18_IT(void)
-{
-    // CubeMX에서: Scan Disable, NbrOfConversion=1, Rank1=IN18,
-    // Continuous Conversion Enable, EOC Selection=EOC 
-    HAL_ADC_Start_IT(&hadc1);  
-}
-
-
-/*void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance != ADC1) return;
-    uart6_log("[ADC1] DMA Cplt!\r\n");
-    // DMA full complete = FFT_SIZE 
-    g_frame_c1 = DWT->CYCCNT;
-    
-    for (int i = 0; i < FFT_SIZE; i++) {
-        uint16_t raw = raw_buffer[i];
-        inputSignal[i] = ((float)raw * 3.3f / 4095.0f) - 1.65f;
-    }
-
-    g_ultra_frame_tick = HAL_GetTick();
-    ultra_frame_ready = true;
-    ultra_sampling_paused = true;
-
-    HAL_ADC_Stop_DMA(&hadc1);   
-    HAL_TIM_Base_Stop(&htim6);
-}*/
-
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance != ADC1) return;
     g_dma_half++;
 }
 
-/* void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance != ADC1) return;
-    g_dma_done++;
-
-    g_frame_c1 = DWT->CYCCNT;
-    ultra_frame_ready = 1;
-} */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance != ADC1) return;
@@ -1665,33 +1531,9 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
                   (unsigned long)now);
     } */
 }
-/*
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance == TIM3) {
-    	HAL_UART_Transmit(&huart6, (uint8_t*)"Tick\r\n", 6, HAL_MAX_DELAY);
-        if (++g_sec_tick >= 10) {   
-            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
-            g_sec_tick = 0;
-        }
-    }
-}
-*/
-
 static void mid_pack_uid12(uint8_t out12[12]) {
     memcpy(out12, (const void*)uid_ram, 12);
 }
-
-/*
-static inline int is_night(int now, int dusk, int dawn)
-{
-    if (dusk <= dawn) {
-        return (now >= dusk) && (now < dawn);
-    } else {
-        return (now >= dusk) || (now < dawn);
-    }
-}
-*/
 
 static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len)
 {
@@ -1743,71 +1585,12 @@ void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid)
 #endif
 }
 
-static void send_resp_now_from_task(void)
-{
-    uint8_t uid12[12];
-    mid_pack_uid12(uid12);
-
-    SlotRespBin_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
-
-    pkt.t = 0x11;                 
-    memcpy(pkt.uid, uid12, 12);
-
-    pkt.mid   = my_mid;
-    pkt.ok    = g_resp.ok ? 1 : 0;
-    pkt.has_on = g_resp.p_on_valid;
-    pkt.on     = g_resp.p_on ? 1 : 0;
-    pkt.nonce  = g_resp.nonce;    
-    
-    wisun_frame_cfg_t cfg = {
-        .sig1 = 0xAA,
-        .sig2 = 0xAB,
-        .tmid = 0x0000
-    };
-
-    (void)wisun_send_frame(&cfg, (const uint8_t*)&pkt, sizeof(pkt),
-                           wisun_tx_adapter, NULL);
-
-    __disable_irq();
-    memset((void*)&g_resp, 0, sizeof(g_resp));
-    __enable_irq();
-}
-
 static bool compact_snap_is_own_uid(const uint8_t *data)
 {
     uint8_t uid12[12];
 
     mid_pack_uid12(uid12);
     return memcmp(&data[SNAP_COMPACT_UID_IDX], uid12, sizeof(uid12)) == 0;
-}
-
-void rtc_minute_tick(uint8_t hour, uint8_t min)
-{
-    uint16_t now = hour * 60u + min;
-    static uint8_t light_state = 0;
-
-    switch (current_control_mode()) {
-    case 2: // user_time
-    {
-        uint16_t on  = g_node_cfg.light_on_hour  * 60u + g_node_cfg.light_on_min;
-        uint16_t off = g_node_cfg.light_off_hour * 60u + g_node_cfg.light_off_min;
-
-        if (!light_state && now >= on && now < off) {
-            light_on();
-            light_state = 1;
-        } else if (light_state && (now >= off || now < on)) {
-            light_off();
-            light_state = 0;
-        }
-        break;
-    }
-    case 3: // manual                
-        break;
-
-    default:        
-        break;
-    }
 }
 
 void Input_Ai_Model(float v)
@@ -1823,18 +1606,6 @@ void Input_Ai_Model(float v)
         ai_index = AE_COLS;   // clamp
         ai_pending = 1;
     }
-}
-
-void Input_Ai_Model_Features(float freq_khz, float adc_pk, float current, float vin)
-{
-    if (ai_pending) return;
-
-    ai_input[AI_FEATURE_FREQ_KHZ_IDX] = freq_khz;
-    ai_input[AI_FEATURE_ADC_PK_IDX]   = adc_pk;
-    ai_input[AI_FEATURE_CURRENT_IDX]  = current;
-    ai_input[AI_FEATURE_VIN_IDX]      = vin;
-    ai_index = AE_COLS;
-    ai_pending = 1;
 }
 
 static int hexval(char c){
@@ -1906,7 +1677,7 @@ static void nodeinfo_cache_update_from_kv(const char *kv_line)
             g_node_info.rch1 = (b>=0) ? (uint8_t)b : 0xFF;
         }
     } else if (strncmp(p, "MAC=", 4) == 0) {
-        // "00124B002D441B87" -> 8바이트
+        // "00124B002D441B87" -> 8바이??
         parse_hex8(p+4, g_node_info.mac);   
     } else if (strncmp(p, "FWVER=", 6) == 0) {
         int maj=0, min=0;
@@ -1916,30 +1687,6 @@ static void nodeinfo_cache_update_from_kv(const char *kv_line)
         }
     }
 }
-
-void tx_task_poll(void)
-{
-    if (!g_resp.pending) return;
-    if ((int32_t)(HAL_GetTick() - g_resp.due_tick) < 0) return;
-
-    __disable_irq();
-    g_resp.pending = false;
-    __enable_irq();
-
-    send_resp_now_from_task();
-}
-
-/*
-static void light_force_gpio_out(void)
-{
-    GPIO_InitTypeDef gi = {0};
-    gi.Pin   = LIGHT_Pin;
-    gi.Mode  = GPIO_MODE_OUTPUT_PP;
-    gi.Pull  = GPIO_NOPULL;
-    gi.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LIGHT_GPIO_Port, &gi);
-}
-*/
 
 static inline void DWT_CYCCNT_Init(void)
 {
@@ -1984,6 +1731,66 @@ void update_sun_times(void)
         return;
     if (g_rtc_day == 0 || g_rtc_day > 31)
         return;
+
+    if (g_node_cfg.coord_enable) {
+        uint8_t apply_coord_type = (g_node_cfg.apply_coord_type == 1u) ? 1u : 0u;
+        int32_t apply_lat_e7 = apply_coord_type ? g_node_cfg.install_lat_e7 : g_node_cfg.standard_lat_e7;
+        int32_t apply_lon_e7 = apply_coord_type ? g_node_cfg.install_lon_e7 : g_node_cfg.standard_lon_e7;
+
+        if (!coord_e7_valid(apply_lat_e7, apply_lon_e7)) {
+            g_node_cfg.coord_enable = 0u;
+        } else {
+            if (g_rtc_year   == g_last_sun_year   &&
+                g_rtc_month  == g_last_sun_month  &&
+                g_rtc_day    == g_last_sun_day    &&
+                g_last_sun_region == 0xFEu) {
+                return;
+            }
+
+            int sr = 0, ss = 0, dawn = 0, dusk = 0;
+            double lat = (double)apply_lat_e7 / 10000000.0;
+            double lon = (double)apply_lon_e7 / 10000000.0;
+
+            compute_sun_times_latlon(
+                g_rtc_year,
+                g_rtc_month,
+                g_rtc_day,
+                lat,
+                lon,
+                &sr, &ss, &dawn, &dusk
+            );
+
+            sr   = norm_min(sr);
+            ss   = norm_min(ss);
+            dawn = norm_min(dawn);
+            dusk = norm_min(dusk);
+
+            g_sunrise_min = (uint16_t)sr;
+            g_sunset_min  = (uint16_t)ss;
+            g_dawn_min    = (uint16_t)dawn;
+            g_dusk_min    = (uint16_t)dusk;
+
+            g_last_sun_year   = g_rtc_year;
+            g_last_sun_month  = g_rtc_month;
+            g_last_sun_day    = g_rtc_day;
+            g_last_sun_region = 0xFEu;
+
+            if (!focus_timing_log_enabled()) {
+                char buf[128];
+                int len = snprintf(buf, sizeof(buf),
+                    "[SUN_COORD] %04u-%02u-%02u coord_type=%u lat=%ld lon=%ld SR=%u SS=%u DAWN=%u DUSK=%u\r\n",
+                    g_rtc_year, g_rtc_month, g_rtc_day,
+                    (unsigned)apply_coord_type,
+                    (long)apply_lat_e7,
+                    (long)apply_lon_e7,
+                    g_sunrise_min, g_sunset_min, g_dawn_min, g_dusk_min);
+                if (len > 0) {
+                    HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, HAL_MAX_DELAY);
+                }
+            }
+            return;
+        }
+    }
 
     if (rtc_apply_gateway_sun_times_if_current()) {
         uint8_t sun_gw_should_log =
@@ -2198,6 +2005,7 @@ void wisun_process_rx_mainloop(void)
             flags,
             msg_id,
             src_mid,
+            target_mid,
             (v.data_len > 7U) ? &v.data[7] : NULL,
             (v.data_len > 7U) ? (uint16_t)(v.data_len - 7U) : 0U
         );
@@ -2247,10 +2055,10 @@ void wisun_process_rx_mainloop(void)
     for (int qi = 0; qi < HOP_QUEUE_SIZE; ++qi) {
         if (!g_hop_q[qi].in_use) {
             if (v.data_len > HOP_MAX_FRAME) {
-                break; // 너무 크면 버림
+                break; // ?�무 ?�면 버림
             }
 
-            // TTL=0이면 forward 금지
+            // TTL=0?�면 forward 금�?
             if (v.data_len >= 3U) {
                 uint8_t ttl0 = v.data[2];
                 if (ttl0 == 0U) {
@@ -2278,8 +2086,22 @@ void wisun_process_rx_mainloop(void)
 }
 }
 
+void snapshot_suppress_next_tx(void)
+{
+    __disable_irq();
+    g_snapshot_suppress_next_tx = 1u;
+    __enable_irq();
+}
+
 void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 {
+    uint8_t suppress_tx = 0u;
+
+    __disable_irq();
+    suppress_tx = g_snapshot_suppress_next_tx;
+    g_snapshot_suppress_next_tx = 0u;
+    __enable_irq();
+
     if (req_msg_id == 0 && !node_is_provisioned()) {
         uart6_log("[SNAP_SKIP] reason=not_provisioned req_msg_id=%u my_mid=%u\r\n",
                   (unsigned)req_msg_id,
@@ -2318,11 +2140,11 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     float vin_v   = 0.0f;
     float i_adc_v = 0.0f;
     if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-        vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-        i_adc_v = (float)vi.curr_raw * K_ADC2V;
+        vin_v   = adc_raw_to_dc_vin(vi.volt_raw);
+        i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
     }
 
-    /* ===== 4) 온도 ===== */
+    /* ===== 4) ?�도 ===== */
     /* uint16_t temp_raw = 0;
     float temp_v = 0.0f;
     float temp_c = 0.0f;
@@ -2361,10 +2183,15 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 
     float max_amp = -1.0f;
     float peak_f  = 0.0f;
+    uint16_t peak_i = 0u;
     uint8_t found = 0;
     float   supersonic_val = 0.0f;
     uint8_t ultra_signal_ok = 0u;
     uint16_t adc_span = 0u;
+    float snap_fs_hz = tim6_sample_rate_hz();
+    if (snap_fs_hz <= 1.0f || !isfinite(snap_fs_hz)) {
+        snap_fs_hz = (float)FSAMPLE;
+    }
 
     {
         static float32_t local_in[FFT_SIZE];
@@ -2453,30 +2280,56 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
                 mag = 0.0f;
             }
 
-            fft_packet[i].freq      = (float)i * (float)FSAMPLE / (float)FFT_SIZE;
+            fft_packet[i].freq      = (float)i * snap_fs_hz / (float)FFT_SIZE;
             fft_packet[i].amplitude = mag;
         }
         supersonic_val = compute_supersonic_rms_from_fftdata(fft_packet, FFT_SIZE / 2);
 
         uint16_t nbins = FFT_SIZE / 2;
         for (uint16_t b = 1; b < nbins; ++b) {
-            float freq = (float)b * (float)FSAMPLE / (float)FFT_SIZE;
+            float freq = (float)b * snap_fs_hz / (float)FFT_SIZE;
             float amp  = fft_packet[b].amplitude;
 
             if (!isfinite(amp)) {
                 amp = 0.0f;
             }
 
-            if (freq >= 80000.0f && freq <= 130000.0f) {
+            if (freq >= 80000.0f && freq <= 125000.0f) {
                 if (amp > max_amp) {
                     max_amp = amp;
                     peak_f  = freq;
+                    peak_i  = b;
                     found   = 1u;
                 }
             }
         }  
 
-        uart6_log("[SNAP_FFT_PEAK] mode=magonly found=%u peak_f=%f max_amp=%f amp_min=%f span=%u\r\n", (unsigned)found, peak_f, max_amp, SNAP_FFT_VALID_AMP_MIN, (unsigned)adc_span);
+        if (found && peak_i >= 2u && peak_i <= (uint16_t)((FFT_SIZE / 2) - 2)) {
+            float a0 = fft_packet[peak_i - 1u].amplitude;
+            float a1 = fft_packet[peak_i].amplitude;
+            float a2 = fft_packet[peak_i + 1u].amplitude;
+
+            max_amp = sqrtf(a0 * a0 + a1 * a1 + a2 * a2);
+        }
+
+        const float N = (float)FFT_SIZE;
+        const float hann_cg = 0.5f;
+        float vpk = (found && max_amp > 0.0f) ? ((2.0f / (N * hann_cg)) * max_amp) : 0.0f;
+        float mvpk = vpk * 1000.0f;
+        float mvpp = 2.0f * mvpk;
+        float adc_pk = vpk * (4095.0f / 3.3f);
+
+        uart6_log("[SNAP_FFT_PEAK] mode=magonly found=%u peak_f=%f bin=%u max_amp=%f mvpk=%f mvpp=%f adc_pk=%f amp_min=%f span=%u fs=%f\r\n",
+                (unsigned)found,
+                peak_f,
+                (unsigned)peak_i,
+                max_amp,
+                mvpk,
+                mvpp,
+                adc_pk,
+                SNAP_FFT_VALID_AMP_MIN,
+                (unsigned)adc_span,
+                snap_fs_hz);
 
         if (found && ultra_signal_ok && max_amp >= SNAP_FFT_VALID_AMP_MIN) {
             fft_freq[0] = peak_f;
@@ -2525,7 +2378,19 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         }
     }
     g_monitor_count++;
-    light_sensor_cache_update(vin_v, i_adc_v, temp_c, fft_cnt, fft_freq, fft_amp, g_monitor_count);
+    light_sensor_cache_update(vin_v, i_adc_v, temp_c, fft_cnt, fft_freq, fft_amp, g_monitor_count, light_on ? 1u : 0u);
+
+    if (suppress_tx) {
+        uart6_log("[SNAP_TX_SUPPRESS] reason=light_event_measure snap_count=%lu light_on=%u fft_count=%u mid=%u\r\n",
+                  (unsigned long)g_monitor_count,
+                  (unsigned)(light_on ? 1u : 0u),
+                  (unsigned)fft_cnt,
+                  (unsigned)my_mid);
+        Ultra_StartDmaFrame();
+        g_last_has_msg_id = 0;
+        g_last_has_cmd = 0;
+        return;
+    }
 
 #if SNAP_COMPACT_DIRECT_ENABLE
     {
@@ -2602,7 +2467,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         return;
     }
 
-    /* ===== 7) SnapBin 구성전송 ===== */
+    /* ===== 7) SnapBin 구성?�송 ===== */
 #endif
     uint16_t tx_msg_id = (req_msg_id != 0u) ? req_msg_id : (uint16_t)(g_monitor_count & 0xFFFFu);
     uint16_t snap_tmid = 0u;
@@ -2672,8 +2537,8 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 
     /*
      * fft_cnt, fft_freq, fft_amp, g_monitor_count가
-     * ISR 또는 다른 처리 루틴에서 갱신될 수 있다면
-     * 여기서 한 번에 복사해서 encode 중 값이 바뀌지 않게 한다.
+     * ISR ?�는 ?�른 처리 루틴?�서 갱신?????�다�?
+     * ?�기????번에 복사?�서 encode �?값이 바뀌�? ?�게 ?�다.
      */
     __disable_irq();
 
@@ -2939,11 +2804,6 @@ int main(void)
    }
   //HAL_ADC_Start_IT(&hadc2);
   Ultra_StartDmaFrame();
- /* HAL_TIM_Base_Start(&htim6);
-  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_dma_buffer, FFT_SIZE) != HAL_OK)
-	{
-		Error_Handler();
-	}*/
   SCB->SHCSR &= ~(SCB_SHCSR_MEMFAULTENA_Msk);
         __DSB();
         __ISB();
@@ -3109,6 +2969,7 @@ int main(void)
 	         // ===================== Node Info / Wi-SUN App =====================
 	         nodeinfo_poll(now);
 	         wisun_app_poll(now);
+	         rtc_scheduler_fallback_poll(now);
 	         wisun_idle_reset_poll(HAL_GetTick());
 	         snapshot_poll(now,
 	                       ultra_frame_ready ? 1u : 0u,
@@ -3957,7 +3818,7 @@ void resp_slot_task_poll(void)
         return;
     }
 
-    // 현재 송신 슬롯으로 복사
+    // ?�재 ?�신 ?�롯?�로 복사
     memcpy(&g_resp_slot, &g_resp_q[ready_idx], sizeof(g_resp_slot));
     memset(&g_resp_q[ready_idx], 0, sizeof(g_resp_q[ready_idx]));
     __enable_irq();
@@ -3977,7 +3838,7 @@ void resp_slot_task_poll(void)
         }
     }
 
-    // RAW 버퍼 응답이면 그대로 전송
+    // RAW 버퍼 ?�답?�면 그�?�??�송
     if (g_resp_slot.has_raw_buf) {
         char msg[128];
         int n = snprintf(msg, sizeof(msg),
@@ -4063,11 +3924,6 @@ static bool is_uplink_report_cmd(uint8_t cmd)
     }
 }
 
-void Vac_Ctrl(void) {
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, 1);
-
-}
-
 static void Read_UID_local(void){
     Read_UID(); 
     uid_ram_local[0] = uid_ram[0];
@@ -4088,23 +3944,13 @@ static void init_uid_string(void){
              "%08" PRIX32 "-%08" PRIX32 "-%08" PRIX32,
              uid_ram_local[2], uid_ram_local[1], uid_ram_local[0]);
 }
-void Format_UID(char *msg, size_t size) {
-    Read_UID();  
-    snprintf(msg, size, "%08" PRIX32 "-%08" PRIX32 "-%08" PRIX32 "\r\n",
-             uid_ram[2], uid_ram[1], uid_ram[0]);
-}
-
-uint32_t Get_Device_ID(void) {
-           return DBGMCU->IDCODE;  
-}
-
 static void apply_mid(uint16_t new_mid)
 {
     if (new_mid == 0 || new_mid == MID_INVALID) {
         return;
     }
 
-    // 1) Wi-SUN 모듈설정
+    // 1) Wi-SUN 모듈?�정
 #if WISUN_AT_COMMAND_ENABLE
     char cmd_buf[32];
     int n = snprintf(cmd_buf, sizeof(cmd_buf), "AT+MID=%u\r\n", new_mid);
@@ -4185,25 +4031,32 @@ static void nodeinfo_poll(uint32_t now)
     }
 }
 
-void debug_print_boot_info(uint16_t stored_mid)
+static float tim6_sample_rate_hz(void)
 {
-    char buf[128];
-    int len = snprintf(buf, sizeof(buf),
-                       "[BOOT] stored_mid=%04X, cfg.mid=%04X, cfg.mid_assigned=%u, my_mid=%04X\r\n",
-                       stored_mid, g_node_cfg.mid, g_node_cfg.mid_assigned, my_mid);
+    RCC_ClkInitTypeDef clk = {0};
+    uint32_t flash_latency = 0u;
+    uint32_t pclk1_hz;
+    uint32_t tim_clk_hz;
+    uint32_t prescaler;
+    uint32_t period;
 
-    if (len > 0) {
-        if (len > sizeof(buf)) {
-            len = sizeof(buf); 
-        }
-        HAL_UART_Transmit(&huart6, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY);
+    HAL_RCC_GetClockConfig(&clk, &flash_latency);
+
+    pclk1_hz = HAL_RCC_GetPCLK1Freq();
+    tim_clk_hz = pclk1_hz;
+
+    if (clk.APB1CLKDivider != RCC_HCLK_DIV1) {
+        tim_clk_hz = pclk1_hz * 2u;
     }
-}
 
-uint8_t calc_checksum(uint8_t *buf, uint16_t len) {
-	uint8_t sum = 0;
-	for (uint16_t i = 0; i < len; i++) sum += buf[i];
-	return sum;
+    prescaler = htim6.Init.Prescaler + 1u;
+    period = htim6.Init.Period + 1u;
+
+    if (prescaler == 0u || period == 0u) {
+        return 0.0f;
+    }
+
+    return (float)tim_clk_hz / ((float)prescaler * (float)period);
 }
 
 static void InitHannWindowOnce(void)
@@ -4295,22 +4148,6 @@ void Parse_AT_Response(const char* buffer)
             g_wait_mid_query = 0;
         }
     }
-}
-
-void wisun_toss_packet(uint16_t tmid, const uint8_t *rx, uint16_t rx_len)
-{
-    wisun_frame_view_t v;
-    if (!wisun_parse_frame(rx, rx_len, &v)) {
-        return; 
-    }
-
-    wisun_frame_cfg_t cfg = {
-        .sig1 = 0xAA,
-        .sig2 = 0xAB,  
-        .tmid = tmid,
-    };
-    
-    wisun_send_frame(&cfg, v.data, v.data_len, wisun_tx_adapter, NULL);
 }
 
 void Ultra_StartSampling(void) {
@@ -4610,8 +4447,8 @@ void Debug_Print_FFT_Peak(void)
         {
             VIRead vi;
             if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-                vin_v   = (float)vi.volt_raw * (3.3f / 4095.0f);
-                i_adc_v = (float)vi.curr_raw * K_ADC2V;
+                vin_v   = adc_raw_to_dc_vin(vi.volt_raw);
+                i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
             }
         }
 
@@ -4636,7 +4473,7 @@ void Debug_Print_FFT_Peak(void)
         /*uart6_log("[DTDBG] c0=%lu c1=%lu dc=%lu SystemCoreClock=%lu FFT_SIZE=%u dt_ms=%.3f fs_eff=%.1f\r\n",
                   (unsigned long)c0, (unsigned long)c1, (unsigned long)dc,
                   (unsigned long)SystemCoreClock, (unsigned)FFT_SIZE, dt_ms, fs_eff);*/
-        // ---- Zero-crossing 주파수 추정 ----
+        // ---- Zero-crossing 주파??추정 ----
         /*int zc = 0;
         for (int i = 1; i < FFT_SIZE; i++) {
             float a = x[i-1];

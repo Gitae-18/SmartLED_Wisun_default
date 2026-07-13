@@ -133,11 +133,8 @@ static double calc_solar_event_utc( int year, int month, int day, double latitud
 // sunrise / sunset / civil dawn / civil dusk 계산
 // 결과는 "한국시간 기준 분 단위"로 반환
 // ----------------------------------------------------
-void compute_sun_times( int year, int month, int day, int region_code, int *sunrise_min, int *sunset_min, int *dawn_min, int *dusk_min)
+void compute_sun_times_latlon( int year, int month, int day, double lat, double lon, int *sunrise_min, int *sunset_min, int *dawn_min, int *dusk_min)
 {
-    double lat, lon;
-    get_region_latlon(region_code, &lat, &lon);
-
     // sunrise
     double sr_utc = calc_solar_event_utc(year, month, day,
                                          lat, lon, SUN_ALTITUDE_SUNRISE_SUNSET, 1);
@@ -171,4 +168,11 @@ void compute_sun_times( int year, int month, int day, int region_code, int *sunr
     *sunset_min  = (int)(sunset_utc * 60);
     *dawn_min    = (int)(cd_utc * 60);
     *dusk_min    = (int)(cs_utc * 60);
+}
+
+void compute_sun_times( int year, int month, int day, int region_code, int *sunrise_min, int *sunset_min, int *dawn_min, int *dusk_min)
+{
+    double lat, lon;
+    get_region_latlon(region_code, &lat, &lon);
+    compute_sun_times_latlon(year, month, day, lat, lon, sunrise_min, sunset_min, dawn_min, dusk_min);
 }

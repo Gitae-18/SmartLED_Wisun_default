@@ -19,6 +19,8 @@ static uint32_t   g_snap_interval_ms = 60000u;
 static uint32_t   g_snap_last_rtc_slot = UINT32_MAX;
 static uint32_t   g_snap_last_tx_slot = UINT32_MAX;
 static uint8_t    g_snap_last_tx_was_response = 0u;
+static uint32_t   g_snap_last_light_event_tx_tick = 0u;
+static uint8_t    g_snap_skip_after_light_event_pending = 0u;
 
 extern node_cfg_t g_node_cfg;
 extern uint16_t my_mid;
@@ -122,7 +124,6 @@ void snapshot_reconfigure_timer_from_cfg(void)
                   (unsigned)g_snap_enable,
                   (unsigned long)interval_sec,
                   (unsigned)my_mid);
-        Send_Monitoring_Snapshot_JSON(0);
         (void)snapshot_rtc_current_slot(interval_sec, &g_snap_last_rtc_slot);
     } else {
         uart6_log("[SNAP_CFG] enable=0 my_mid=%u\r\n", (unsigned)my_mid);
@@ -156,6 +157,12 @@ void snapshot_mark_tx(uint8_t was_response)
     }
 }
 
+void snapshot_note_light_event_tx(void)
+{
+    g_snap_last_light_event_tx_tick = HAL_GetTick();
+    g_snap_skip_after_light_event_pending = 1u;
+}
+
 void snapshot_poll(uint32_t now,
                    uint8_t ultra_frame_ready,
                    uint8_t ultra_sampling_paused,
@@ -176,6 +183,22 @@ void snapshot_poll(uint32_t now,
             if ((uint32_t)(now - last_light_control_tick) < SNAP_AFTER_LIGHT_CONTROL_HOLD_MS) {
                 return;
             } else {
+                if (g_snap_skip_after_light_event_pending &&
+                    (uint32_t)(now - g_snap_last_light_event_tx_tick) <= SNAP_SKIP_AFTER_LIGHT_EVENT_MS) {
+                    uart6_log("[SNAP_SKIP] reason=after_light_event rtc_slot=%lu age=%lu mid=%u\r\n",
+                              (unsigned long)rtc_slot,
+                              (unsigned long)(now - g_snap_last_light_event_tx_tick),
+                              (unsigned)my_mid);
+                    g_snap_skip_after_light_event_pending = 0u;
+                    g_snap_last_rtc_slot = rtc_slot;
+                    return;
+                }
+
+                if (g_snap_skip_after_light_event_pending &&
+                    (uint32_t)(now - g_snap_last_light_event_tx_tick) > SNAP_SKIP_AFTER_LIGHT_EVENT_MS) {
+                    g_snap_skip_after_light_event_pending = 0u;
+                }
+
                 if (rtc_slot == g_snap_last_tx_slot) {
                     uart6_log("[SNAP_SKIP] reason=slot_tx_exists rtc_slot=%lu last_was_resp=%u mid=%u\r\n",
                               (unsigned long)rtc_slot,

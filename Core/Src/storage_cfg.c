@@ -28,11 +28,42 @@ typedef struct {
     uint8_t  saving_end_min;
 } legacy_node_cfg_t;
 
+typedef struct {
+    uint8_t  mode;
+    uint8_t  light_on_hour;
+    uint8_t  light_on_min;
+    uint8_t  light_off_hour;
+    uint8_t  light_off_min;
+    uint8_t  manual_duration_min;
+    uint8_t  snap_enable;
+    uint16_t snap_interval_sec;
+    uint16_t mid;
+    uint8_t  rch[2];
+    uint8_t  mid_assigned;
+    uint8_t  on_off_mode;
+    uint8_t  on_corr_mode;
+    uint16_t on_corr_time_min;
+    uint8_t  off_corr_mode;
+    uint16_t off_corr_time_min;
+    uint16_t forced_time_min;
+    uint8_t  saving_mode;
+    uint8_t  saving_start_hour;
+    uint8_t  saving_start_min;
+    uint8_t  saving_end_hour;
+    uint8_t  saving_end_min;
+} node_cfg_v1_t;
+
 typedef struct __attribute__((packed)) {
     uint32_t          magic;
     uint32_t          crc;
     legacy_node_cfg_t cfg;
 } legacy_node_cfg_flash_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t      magic;
+    uint32_t      crc;
+    node_cfg_v1_t cfg;
+} node_cfg_v1_flash_t;
 
 static uint32_t calc_crc32(const uint8_t *data, size_t len)
 {
@@ -65,6 +96,8 @@ void node_cfg_init_default(node_cfg_t *cfg)
     cfg->manual_duration_min = 30;
     cfg->snap_enable = 1;
     cfg->snap_interval_sec = 60;
+    cfg->coord_enable = 0;
+    cfg->apply_coord_type = 0;
 }
 
 bool save_mid_to_flash(uint16_t mid)
@@ -167,6 +200,47 @@ bool load_node_cfg_from_flash(node_cfg_t *out)
         if (calc == cur->crc) {
             *out = cur->cfg;
             out->forced_time_min = 0u;
+            if (out->apply_coord_type > 1u) {
+                out->apply_coord_type = 0u;
+            }
+            if (out->snap_interval_sec == 0u) {
+                out->snap_interval_sec = 60u;
+            }
+            return true;
+        }
+    }
+
+    {
+        node_cfg_v1_flash_t *v1 = (node_cfg_v1_flash_t *)FLASH_NODECFG_ADDR;
+
+        if (v1->magic == NODE_CFG_MAGIC &&
+            calc_crc32((const uint8_t *)&v1->cfg, sizeof(v1->cfg)) == v1->crc) {
+            memset(out, 0, sizeof(*out));
+            out->mode = v1->cfg.mode;
+            out->light_on_hour = v1->cfg.light_on_hour;
+            out->light_on_min = v1->cfg.light_on_min;
+            out->light_off_hour = v1->cfg.light_off_hour;
+            out->light_off_min = v1->cfg.light_off_min;
+            out->manual_duration_min = v1->cfg.manual_duration_min;
+            out->snap_enable = v1->cfg.snap_enable;
+            out->snap_interval_sec = v1->cfg.snap_interval_sec;
+            out->mid = v1->cfg.mid;
+            out->rch[0] = v1->cfg.rch[0];
+            out->rch[1] = v1->cfg.rch[1];
+            out->mid_assigned = v1->cfg.mid_assigned;
+            out->on_off_mode = v1->cfg.on_off_mode;
+            out->on_corr_mode = v1->cfg.on_corr_mode;
+            out->on_corr_time_min = v1->cfg.on_corr_time_min;
+            out->off_corr_mode = v1->cfg.off_corr_mode;
+            out->off_corr_time_min = v1->cfg.off_corr_time_min;
+            out->forced_time_min = 0u;
+            out->saving_mode = v1->cfg.saving_mode;
+            out->saving_start_hour = v1->cfg.saving_start_hour;
+            out->saving_start_min = v1->cfg.saving_start_min;
+            out->saving_end_hour = v1->cfg.saving_end_hour;
+            out->saving_end_min = v1->cfg.saving_end_min;
+            out->coord_enable = 0u;
+            out->apply_coord_type = 0u;
             if (out->snap_interval_sec == 0u) {
                 out->snap_interval_sec = 60u;
             }
@@ -209,6 +283,7 @@ bool load_node_cfg_from_flash(node_cfg_t *out)
         out->saving_start_min = legacy->cfg.saving_start_min;
         out->saving_end_hour = legacy->cfg.saving_end_hour;
         out->saving_end_min = legacy->cfg.saving_end_min;
+        out->apply_coord_type = 0u;
         return true;
     }
 }

@@ -26,6 +26,14 @@ uint8_t g_rtc_month;
 uint16_t g_rtc_year;
 uint8_t g_rtc_synced = 0u;
 volatile uint8_t g_schedule_alarm_due = 1u;
+volatile uint32_t g_rtc_alarm_count = 0u;
+volatile uint32_t g_rtc_alarm_last_tick = 0u;
+
+#define RTC_SCHED_FALLBACK_CHECK_MS   1000u
+#define RTC_SCHED_ALARM_STALE_MS     75000u
+
+static uint32_t g_rtc_sched_fallback_check_tick = 0u;
+static uint32_t g_rtc_sched_fallback_last_key = 0xFFFFFFFFu;
 
 static uint8_t rtc_weekday_from_ymd(uint16_t year, uint8_t month, uint8_t day);
 
@@ -406,9 +414,63 @@ void rtc_schedule_next_minute_alarm(void)
     }
 }
 
+
+void rtc_scheduler_fallback_poll(uint32_t now)
+{
+    uint32_t alarm_age;
+    uint32_t minute_key;
+
+    if ((uint32_t)(now - g_rtc_sched_fallback_check_tick) < RTC_SCHED_FALLBACK_CHECK_MS) {
+        return;
+    }
+    g_rtc_sched_fallback_check_tick = now;
+
+    /* 정상 RTC Alarm이 최근에 들어왔다면 기존 Alarm 경로에 맡긴다. */
+    if (g_rtc_alarm_last_tick != 0u) {
+        alarm_age = (uint32_t)(now - g_rtc_alarm_last_tick);
+        if (alarm_age < RTC_SCHED_ALARM_STALE_MS) {
+            return;
+        }
+    } else if (now < RTC_SCHED_ALARM_STALE_MS) {
+        /* 부팅 직후에는 최초 Alarm이 들어올 시간을 준다. */
+        return;
+    }
+
+    rtc_update();
+
+    minute_key = ((uint32_t)(g_rtc_year & 0x0FFFu) << 20) |
+                 ((uint32_t)(g_rtc_month & 0x0Fu) << 16) |
+                 ((uint32_t)(g_rtc_day & 0x1Fu) << 11) |
+                 ((uint32_t)(g_rtc_hour & 0x1Fu) << 6) |
+                 ((uint32_t)(g_rtc_min & 0x3Fu));
+
+    if (minute_key == g_rtc_sched_fallback_last_key) {
+        return;
+    }
+    g_rtc_sched_fallback_last_key = minute_key;
+
+    update_sun_times();
+    scheduler_poll();
+
+    uart6_log("[RTC_SCHED_FALLBACK] alarm_count=%lu alarm_age=%lu rtc=%04u-%02u-%02u %02u:%02u:%02u\r\n",
+              (unsigned long)g_rtc_alarm_count,
+              (unsigned long)((g_rtc_alarm_last_tick == 0u) ? now : (now - g_rtc_alarm_last_tick)),
+              (unsigned)g_rtc_year,
+              (unsigned)g_rtc_month,
+              (unsigned)g_rtc_day,
+              (unsigned)g_rtc_hour,
+              (unsigned)g_rtc_min,
+              (unsigned)g_rtc_sec);
+
+    /* Alarm 체인이 끊겼다면 다음 분 Alarm도 다시 걸어 복구를 시도한다. */
+    rtc_schedule_next_minute_alarm();
+}
+
 void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc_cb)
 {
     if (hrtc_cb != NULL && hrtc_cb->Instance == RTC) {
+        g_rtc_alarm_count++;
+        g_rtc_alarm_last_tick = HAL_GetTick();
         g_schedule_alarm_due = 1u;
     }
 }

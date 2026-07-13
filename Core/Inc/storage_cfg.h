@@ -32,6 +32,13 @@ typedef struct {
     uint8_t  saving_start_min;
     uint8_t  saving_end_hour;
     uint8_t  saving_end_min;
+
+    uint8_t  coord_enable;
+    uint8_t  apply_coord_type;
+    int32_t  standard_lat_e7;
+    int32_t  standard_lon_e7;
+    int32_t  install_lat_e7;
+    int32_t  install_lon_e7;
 } node_cfg_t;
 
 typedef struct __attribute__((packed)) {

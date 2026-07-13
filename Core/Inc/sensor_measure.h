@@ -39,6 +39,18 @@ extern "C" {
 #define K_ADC2V           (VREF_FIXED / ADC_MAX_COUNTS)
 #endif
 
+#ifndef DC_VOLT_DIV_RATIO
+#define DC_VOLT_DIV_RATIO   0.0485f
+#endif
+
+#ifndef ACS712_ZERO_V
+#define ACS712_ZERO_V       2.500f
+#endif
+
+#ifndef ACS712_SENS_V_PER_A
+#define ACS712_SENS_V_PER_A 0.100f
+#endif
+
 #define NTC_VALID_TEMP_MIN_C   (-20.0f)
 #define NTC_VALID_TEMP_MAX_C   (65.0f)
 #define NTC_INVALID_TEMP_C   (-999.0f)
@@ -52,12 +64,23 @@ static inline float adc_to_vsense(uint16_t raw)
 
 static inline float vsense_to_vin(float v_sense)
 {
-    return v_sense * V_DIV_GAIN;
+    return v_sense / DC_VOLT_DIV_RATIO;
 }
 
 static inline float vsense_to_current(float v_sense, float offset_v)
 {
-    return (v_sense - offset_v) / (R_SHUNT * I_AMP_GAIN);
+    float current_a = (v_sense - offset_v) / ACS712_SENS_V_PER_A;
+    return (current_a < 0.0f) ? 0.0f : current_a;
+}
+
+static inline float adc_raw_to_dc_vin(uint16_t raw)
+{
+    return vsense_to_vin(adc_to_vsense(raw));
+}
+
+static inline float adc_raw_to_dc_current(uint16_t raw)
+{
+    return vsense_to_current(adc_to_vsense(raw), ACS712_ZERO_V);
 }
 
 float ntc_voltage_to_temp_c(float temp_v);

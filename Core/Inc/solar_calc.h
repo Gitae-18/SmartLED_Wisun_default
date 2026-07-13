@@ -36,4 +36,16 @@ void compute_sun_times(
     int *dusk_min
 );
 
+void compute_sun_times_latlon(
+    int year,
+    int month,
+    int day,
+    double lat,
+    double lon,
+    int *sunrise_min,
+    int *sunset_min,
+    int *dawn_min,
+    int *dusk_min
+);
+
 #endif // SOLAR_CALC_H

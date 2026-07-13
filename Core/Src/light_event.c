@@ -5,9 +5,11 @@
 
 #include "main.h"
 #include "debug_log.h"
+#include "snapshot.h"
 
 #define FFT_FREQ_SCALE 100.0f
 #define FFT_AMP_SCALE  1000.0f
+#define LIGHT_EVENT_SENSOR_DELAY_MS 1000u
 
 typedef struct {
     uint8_t  valid;
@@ -19,12 +21,22 @@ typedef struct {
     float    fft_amp[LIGHT_EVENT_FFT_PAIRS];
     uint32_t tick_ms;
     uint32_t snap_count;
+    uint8_t  measured_light_on;
 } light_event_sensor_cache_t;
 
 extern RTC_HandleTypeDef hrtc;
 
 __attribute__((weak)) volatile uint32_t uid_ram[3];
 __attribute__((weak)) uint8_t g_rtc_synced;
+
+__attribute__((weak)) void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
+{
+    (void)req_msg_id;
+}
+
+__attribute__((weak)) void snapshot_suppress_next_tx(void)
+{
+}
 
 __attribute__((weak)) uint8_t current_control_mode(void)
 {
@@ -77,6 +89,43 @@ static void *g_tx_blocked_hook_user;
 static void light_event_pack_uid12(uint8_t out12[12])
 {
     memcpy(out12, (const void *)uid_ram, 12u);
+}
+
+static uint8_t light_state_event_refresh_rtc(light_state_event_t *ev)
+{
+    RTC_TimeTypeDef rtc_time = {0};
+    RTC_DateTypeDef rtc_date = {0};
+
+    if (ev == NULL) {
+        return 0u;
+    }
+
+    /*
+     * STM32 RTC shadow register read order:
+     * HAL_RTC_GetTime() first, then HAL_RTC_GetDate().
+     * Read the hardware RTC immediately before event transmission so that
+     * a stale queued/cached RTC value is never sent to the gateway.
+     */
+    if (HAL_RTC_GetTime(&hrtc, &rtc_time, RTC_FORMAT_BIN) != HAL_OK) {
+        ev->valid_flags &= (uint8_t)~LIGHT_EVENT_VALID_RTC;
+        return 0u;
+    }
+
+    if (HAL_RTC_GetDate(&hrtc, &rtc_date, RTC_FORMAT_BIN) != HAL_OK) {
+        ev->valid_flags &= (uint8_t)~LIGHT_EVENT_VALID_RTC;
+        return 0u;
+    }
+
+    ev->rtc_year = (uint16_t)(2000u + rtc_date.Year);
+    ev->rtc_month = rtc_date.Month;
+    ev->rtc_day = rtc_date.Date;
+    ev->rtc_hour = rtc_time.Hours;
+    ev->rtc_min = rtc_time.Minutes;
+    ev->rtc_sec = rtc_time.Seconds;
+    ev->rtc_synced = g_rtc_synced ? 1u : 0u;
+    ev->valid_flags |= LIGHT_EVENT_VALID_RTC;
+
+    return 1u;
 }
 
 static uint32_t light_event_scale_fft_freq_x100(float freq_hz)
@@ -147,6 +196,33 @@ static uint8_t light_event_send(uint16_t target_mid,
     }
 
     return light_event_send_transport(target_mid, ttl, cmd, flags, msg_id, body, body_len);
+}
+
+static uint8_t light_state_event_has_measurements(const light_state_event_t *ev)
+{
+    if (ev == NULL) {
+        return 0u;
+    }
+
+    return ((ev->valid_flags & LIGHT_EVENT_REQUIRED_SENSOR_FLAGS) ==
+            LIGHT_EVENT_REQUIRED_SENSOR_FLAGS) ? 1u : 0u;
+}
+
+static void light_state_event_clear_measurements(light_state_event_t *ev)
+{
+    if (ev == NULL) {
+        return;
+    }
+
+    ev->valid_flags &= (uint8_t)~(LIGHT_EVENT_VALID_VI |
+                                  LIGHT_EVENT_VALID_TEMP |
+                                  LIGHT_EVENT_VALID_FFT);
+    ev->voltage = 0.0f;
+    ev->current = 0.0f;
+    ev->temp = 0.0f;
+    ev->fft_count = 0u;
+    memset(ev->fft_freq, 0, sizeof(ev->fft_freq));
+    memset(ev->fft_amp, 0, sizeof(ev->fft_amp));
 }
 
 void light_event_init(void)
@@ -269,7 +345,8 @@ void light_sensor_cache_update(float voltage,
                                uint8_t fft_count,
                                const float *fft_freq,
                                const float *fft_amp,
-                               uint32_t snap_count)
+                               uint32_t snap_count,
+                               uint8_t measured_light_on)
 {
     light_event_sensor_cache_t cache;
 
@@ -289,6 +366,7 @@ void light_sensor_cache_update(float voltage,
     }
     cache.tick_ms = HAL_GetTick();
     cache.snap_count = snap_count;
+    cache.measured_light_on = measured_light_on ? 1u : 0u;
 
     __disable_irq();
     g_light_sensor_cache = cache;
@@ -310,7 +388,9 @@ static uint8_t light_state_event_fill_measurements(light_state_event_t *ev)
     cache = g_light_sensor_cache;
     __enable_irq();
 
-    if (cache.valid) {
+    if (cache.valid &&
+        cache.measured_light_on == ev->light_on &&
+        ((int32_t)(cache.tick_ms - ev->tick_ms) >= 0)) {
         ev->voltage = cache.voltage;
         ev->current = cache.current;
         ev->temp = cache.temp;
@@ -323,6 +403,21 @@ static uint8_t light_state_event_fill_measurements(light_state_event_t *ev)
         if (ev->fft_count > 0u) {
             ev->valid_flags |= LIGHT_EVENT_VALID_FFT;
         }
+    } else if (cache.valid) {
+        static uint32_t last_state_mismatch_log;
+        uint32_t now = HAL_GetTick();
+
+        if ((uint32_t)(now - last_state_mismatch_log) >= 1000u) {
+            last_state_mismatch_log = now;
+            timing_log("[TLOG_LIGHT_EVT_SENSOR_STALE] t=%lu event_light=%u measured_light=%u snap=%lu cache_age=%lu event_age=%lu cache_before_event=%u\r\n",
+                       (unsigned long)now,
+                       (unsigned)ev->light_on,
+                       (unsigned)cache.measured_light_on,
+                       (unsigned long)cache.snap_count,
+                       (unsigned long)(now - cache.tick_ms),
+                       (unsigned long)(now - ev->tick_ms),
+                       ((int32_t)(cache.tick_ms - ev->tick_ms) < 0) ? 1u : 0u);
+        }
     } else {
         static uint32_t last_no_cache_log;
         uint32_t now = HAL_GetTick();
@@ -331,14 +426,12 @@ static uint8_t light_state_event_fill_measurements(light_state_event_t *ev)
         }
     }
 
-    return ((ev->valid_flags & LIGHT_EVENT_REQUIRED_SENSOR_FLAGS) == LIGHT_EVENT_REQUIRED_SENSOR_FLAGS) ? 1u : 0u;
+    return 1u;
 }
 
 void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_on)
 {
     light_state_event_t ev;
-    RTC_TimeTypeDef rtc_time = {0};
-    RTC_DateTypeDef rtc_date = {0};
 
     if (before_on == after_on) {
         return;
@@ -356,16 +449,9 @@ void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_on)
     ev.tick_ms = HAL_GetTick();
     ev.rtc_synced = g_rtc_synced ? 1u : 0u;
 
-    if (HAL_RTC_GetTime(&hrtc, &rtc_time, RTC_FORMAT_BIN) == HAL_OK &&
-        HAL_RTC_GetDate(&hrtc, &rtc_date, RTC_FORMAT_BIN) == HAL_OK) {
-        ev.rtc_year = (uint16_t)(2000u + rtc_date.Year);
-        ev.rtc_month = rtc_date.Month;
-        ev.rtc_day = rtc_date.Date;
-        ev.rtc_hour = rtc_time.Hours;
-        ev.rtc_min = rtc_time.Minutes;
-        ev.rtc_sec = rtc_time.Seconds;
-        ev.valid_flags |= LIGHT_EVENT_VALID_RTC;
-    }
+    /* Capture the RTC at the state-change point. It is refreshed again
+     * immediately before transmission in light_state_event_poll(). */
+    (void)light_state_event_refresh_rtc(&ev);
 
     __disable_irq();
     if (g_light_event_count < LIGHT_STATE_EVENT_QUEUE_SIZE) {
@@ -383,6 +469,8 @@ void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_on)
 void light_state_event_poll(void)
 {
     static uint32_t last_try_tick;
+    static uint32_t forced_measure_event_id;
+    static uint32_t forced_measure_tick;
     uint32_t now = HAL_GetTick();
     light_state_event_t ev;
     uint8_t body[LIGHT_STATE_EVENT_BODY_LEN];
@@ -401,7 +489,36 @@ void light_state_event_poll(void)
     ev = g_light_event_q[g_light_event_head];
     __enable_irq();
 
+    if ((uint32_t)(now - ev.tick_ms) < LIGHT_EVENT_SENSOR_DELAY_MS) {
+        return;
+    }
+
     if (!light_state_event_fill_measurements(&ev)) {
+        __disable_irq();
+        if (g_light_event_count > 0u) {
+            g_light_event_q[g_light_event_head] = ev;
+        }
+        __enable_irq();
+        return;
+    }
+
+    if (!light_state_event_has_measurements(&ev) &&
+        (forced_measure_event_id != ev.event_id ||
+         (uint32_t)(now - forced_measure_tick) >= 500u)) {
+        forced_measure_event_id = ev.event_id;
+        forced_measure_tick = now;
+        timing_log("[TLOG_LIGHT_EVT_FORCE_SNAP] t=%lu event=%lu light=%u age=%lu\r\n",
+                   (unsigned long)now,
+                   (unsigned long)ev.event_id,
+                   (unsigned)ev.light_on,
+                   (unsigned long)(now - ev.tick_ms));
+        snapshot_suppress_next_tx();
+        Send_Monitoring_Snapshot_JSON(0u);
+        light_state_event_clear_measurements(&ev);
+        (void)light_state_event_fill_measurements(&ev);
+    }
+
+    if (!light_state_event_has_measurements(&ev)) {
         __disable_irq();
         if (g_light_event_count > 0u) {
             g_light_event_q[g_light_event_head] = ev;
@@ -422,6 +539,24 @@ void light_state_event_poll(void)
     }
     last_try_tick = now;
 
+    /*
+     * The event can remain queued while sensor data is collected.
+     * Refresh directly from the hardware RTC just before encoding so the
+     * gateway receives the current RTC rather than an old queued value.
+     */
+    if (!light_state_event_refresh_rtc(&ev)) {
+        timing_log("[TLOG_LIGHT_EVT_RTC_READ_FAIL] t=%lu event=%lu sync=%u\r\n",
+                   (unsigned long)HAL_GetTick(),
+                   (unsigned long)ev.event_id,
+                   (unsigned)ev.rtc_synced);
+    }
+
+    __disable_irq();
+    if (g_light_event_count > 0u) {
+        g_light_event_q[g_light_event_head] = ev;
+    }
+    __enable_irq();
+
     body_len = light_state_event_encode(body, (uint16_t)sizeof(body), &ev);
     if (body_len == 0u) {
         __disable_irq();
@@ -441,6 +576,8 @@ void light_state_event_poll(void)
     if (!light_event_send(0x0000u, 0u, LIGHT_STATE_EVENT_CMD, 0u, msg_id, body, body_len)) {
         return;
     }
+
+    snapshot_note_light_event_tx();
 
     timing_log("[TLOG_LIGHT_EVT_TX] t=%lu event=%lu light=%u mode=%u reason=%u msg=%u flags=0x%02X temp=%f fft_count=%u fft0=%f/%f rtc=%04u-%02u-%02u %02u:%02u:%02u sync=%u\r\n",
                (unsigned long)HAL_GetTick(),

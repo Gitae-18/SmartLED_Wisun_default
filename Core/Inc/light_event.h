@@ -86,7 +86,8 @@ void light_sensor_cache_update(float voltage,
                                uint8_t fft_count,
                                const float *fft_freq,
                                const float *fft_amp,
-                               uint32_t snap_count);
+                               uint32_t snap_count,
+                               uint8_t measured_light_on);
 void light_state_event_poll(void);
 uint16_t light_state_event_encode(uint8_t *out, uint16_t out_cap, const light_state_event_t *ev);
 

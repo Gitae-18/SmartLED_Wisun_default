@@ -110,7 +110,7 @@ float Convert_Voltage_ADC(uint32_t adc_value)
 
 float Convert_Voltage_To_Current(float voltage, float offset)
 {
-    return (voltage - offset) / 0.137f;
+    return vsense_to_current(voltage, offset);
 }
 
 void Print_Voltage_Current(void)
