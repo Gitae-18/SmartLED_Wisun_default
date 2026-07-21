@@ -89,6 +89,7 @@ void node_cfg_init_default(node_cfg_t *cfg)
     memset(cfg, 0, sizeof(*cfg));
 
     cfg->mode = 1;
+    cfg->on_off_mode = cfg->mode;
     cfg->light_on_hour = 19;
     cfg->light_on_min = 0;
     cfg->light_off_hour = 6;

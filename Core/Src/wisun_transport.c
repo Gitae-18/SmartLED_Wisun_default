@@ -39,7 +39,6 @@ bool wisun_transport_send_blocking(const uint8_t *data, uint16_t len) {
 bool wisun_tx_adapter(const uint8_t *data, uint16_t len, void *user) {
     (void)user;
     if (!data || !len) return false;
-
-    // Keep only the framed SNAP dump from wisun_frame.c to reduce duplicate logs.
+    
     return wisun_transport_send_blocking(data, len);
 }

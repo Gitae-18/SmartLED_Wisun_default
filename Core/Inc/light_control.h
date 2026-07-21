@@ -23,6 +23,9 @@ void light_off(void);
 uint8_t light_is_on_logical(void);
 
 uint8_t current_control_mode(void);
+uint8_t light_control_get_effective_schedule(uint8_t *mode_out,
+                                             uint16_t *on_time_min_out,
+                                             uint16_t *off_time_min_out);
 uint8_t light_control_manual_active(void);
 uint16_t manual_override_duration_min(void);
 void start_manual_override(uint8_t want_on);

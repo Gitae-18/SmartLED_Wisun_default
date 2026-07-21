@@ -25,11 +25,11 @@ extern uint16_t g_rtc_day;
 extern uint8_t g_rtc_month;
 extern uint16_t g_rtc_year;
 extern uint8_t g_rtc_synced;
-extern volatile uint8_t g_schedule_alarm_due;
 
 void rtc_update(void);
 void rtc_schedule_next_minute_alarm(void);
 void rtc_sync_request_poll(uint32_t now);
+void rtc_scheduler_poll(uint32_t now);
 uint8_t rtc_apply_gateway_sun_times_if_current(void);
 uint8_t handle_cmd_set_rtc_kst(const uint8_t *data, uint16_t len);
 

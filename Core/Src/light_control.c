@@ -128,6 +128,68 @@ uint8_t current_control_mode(void)
     return g_manual_override_active ? 3u : g_node_cfg.mode;
 }
 
+uint8_t light_control_get_effective_schedule(uint8_t *mode_out,
+                                             uint16_t *on_time_min_out,
+                                             uint16_t *off_time_min_out)
+{
+    uint8_t mode = current_control_mode();
+    uint16_t on_min = 0xFFFFu;
+    uint16_t off_min = 0xFFFFu;
+    uint8_t valid = 0u;
+
+    switch (mode) {
+    case 0u:
+        on_min = apply_time_correction_min(g_sunset_min,
+                                           g_node_cfg.on_corr_mode,
+                                           g_node_cfg.on_corr_time_min);
+        off_min = apply_time_correction_min(g_sunrise_min,
+                                            g_node_cfg.off_corr_mode,
+                                            g_node_cfg.off_corr_time_min);
+        valid = 1u;
+        break;
+
+    case 1u:
+        on_min = apply_time_correction_min(g_dusk_min,
+                                           g_node_cfg.on_corr_mode,
+                                           g_node_cfg.on_corr_time_min);
+        off_min = apply_time_correction_min(g_dawn_min,
+                                            g_node_cfg.off_corr_mode,
+                                            g_node_cfg.off_corr_time_min);
+        valid = 1u;
+        break;
+
+    case 2u:
+        on_min = ((uint16_t)g_node_cfg.light_on_hour * 60u) +
+                 (uint16_t)g_node_cfg.light_on_min;
+        off_min = ((uint16_t)g_node_cfg.light_off_hour * 60u) +
+                  (uint16_t)g_node_cfg.light_off_min;
+        on_min = apply_time_correction_min(on_min,
+                                           g_node_cfg.on_corr_mode,
+                                           g_node_cfg.on_corr_time_min);
+        off_min = apply_time_correction_min(off_min,
+                                            g_node_cfg.off_corr_mode,
+                                            g_node_cfg.off_corr_time_min);
+        valid = 1u;
+        break;
+
+    case 3u:
+    default:
+        break;
+    }
+
+    if (mode_out != NULL) {
+        *mode_out = mode;
+    }
+    if (on_time_min_out != NULL) {
+        *on_time_min_out = on_min;
+    }
+    if (off_time_min_out != NULL) {
+        *off_time_min_out = off_min;
+    }
+
+    return valid;
+}
+
 uint8_t light_control_manual_active(void)
 {
     return g_manual_override_active;

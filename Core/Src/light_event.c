@@ -449,8 +449,6 @@ void light_state_event_note_if_changed(uint8_t before_on, uint8_t after_on)
     ev.tick_ms = HAL_GetTick();
     ev.rtc_synced = g_rtc_synced ? 1u : 0u;
 
-    /* Capture the RTC at the state-change point. It is refreshed again
-     * immediately before transmission in light_state_event_poll(). */
     (void)light_state_event_refresh_rtc(&ev);
 
     __disable_irq();
@@ -539,11 +537,6 @@ void light_state_event_poll(void)
     }
     last_try_tick = now;
 
-    /*
-     * The event can remain queued while sensor data is collected.
-     * Refresh directly from the hardware RTC just before encoding so the
-     * gateway receives the current RTC rather than an old queued value.
-     */
     if (!light_state_event_refresh_rtc(&ev)) {
         timing_log("[TLOG_LIGHT_EVT_RTC_READ_FAIL] t=%lu event=%lu sync=%u\r\n",
                    (unsigned long)HAL_GetTick(),

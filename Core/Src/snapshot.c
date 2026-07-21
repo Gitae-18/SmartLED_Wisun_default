@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "debug_log.h"
+#include "light_control.h"
 #include "main.h"
 #include "rtc_user.h"
 #include "storage_cfg.h"
@@ -26,6 +27,10 @@ extern node_cfg_t g_node_cfg;
 extern uint16_t my_mid;
 extern volatile uint32_t g_monitor_count;
 extern RTC_HandleTypeDef hrtc;
+extern uint16_t g_sunrise_min;
+extern uint16_t g_sunset_min;
+extern uint16_t g_dawn_min;
+extern uint16_t g_dusk_min;
 
 void Ultra_StartDmaFrame(void);
 bool node_is_provisioned(void);
@@ -448,61 +453,242 @@ uint16_t encode_snap_bin(uint8_t *out, uint16_t out_cap, const uint8_t uid12[12]
     return off;
 }
 
-uint16_t encode_snap_compact_bin(uint8_t *out, uint16_t out_cap, const uint8_t uid12[12], float volt, float curr, float temp, uint8_t light_on, uint8_t has_fft0, float fft0_freq, float fft0_amp, uint32_t snap_count, uint8_t ai_valid, uint32_t ai_mse_x1000000, int8_t ai_pred_value, uint8_t ok, uint8_t ttl)
+/* static uint16_t snapshot_norm_minute(uint16_t minute)
+{
+    return (uint16_t)(minute % 1440u);
+} */
+
+/*static void snapshot_get_control_schedule(uint8_t *mode_out,
+                                          uint16_t *on_time_min_out,
+                                          uint16_t *off_time_min_out)
+{
+    uint8_t mode = current_control_mode();
+    uint16_t on_time_min = SNAP_CONTROL_TIME_INVALID;
+    uint16_t off_time_min = SNAP_CONTROL_TIME_INVALID;
+
+    switch (mode) {
+    case 0u:
+        on_time_min = snapshot_norm_minute(
+            apply_time_correction_min(g_sunset_min,
+                                      g_node_cfg.on_corr_mode,
+                                      g_node_cfg.on_corr_time_min));
+        off_time_min = snapshot_norm_minute(
+            apply_time_correction_min(g_sunrise_min,
+                                      g_node_cfg.off_corr_mode,
+                                      g_node_cfg.off_corr_time_min));
+        break;
+
+    case 1u:
+        on_time_min = snapshot_norm_minute(
+            apply_time_correction_min(g_dusk_min,
+                                      g_node_cfg.on_corr_mode,
+                                      g_node_cfg.on_corr_time_min));
+        off_time_min = snapshot_norm_minute(
+            apply_time_correction_min(g_dawn_min,
+                                      g_node_cfg.off_corr_mode,
+                                      g_node_cfg.off_corr_time_min));
+        break;
+
+    case 2u:
+    {
+        uint16_t configured_on =
+            ((uint16_t)g_node_cfg.light_on_hour * 60u) +
+            (uint16_t)g_node_cfg.light_on_min;
+        uint16_t configured_off =
+            ((uint16_t)g_node_cfg.light_off_hour * 60u) +
+            (uint16_t)g_node_cfg.light_off_min;
+
+        on_time_min = snapshot_norm_minute(
+            apply_time_correction_min(configured_on,
+                                      g_node_cfg.on_corr_mode,
+                                      g_node_cfg.on_corr_time_min));
+        off_time_min = snapshot_norm_minute(
+            apply_time_correction_min(configured_off,
+                                      g_node_cfg.off_corr_mode,
+                                      g_node_cfg.off_corr_time_min));
+        break;
+    }
+
+    case 3u:
+    default:
+         Forced/manual control has no fixed scheduled ON/OFF time.
+        on_time_min = SNAP_CONTROL_TIME_INVALID;
+        off_time_min = SNAP_CONTROL_TIME_INVALID;
+        break;
+    }
+
+    if (mode_out != NULL) {
+        *mode_out = mode;
+    }
+    if (on_time_min_out != NULL) {
+        *on_time_min_out = on_time_min;
+    }
+    if (off_time_min_out != NULL) {
+        *off_time_min_out = off_time_min;
+    }
+}*/
+
+uint16_t encode_snap_compact_bin(uint8_t *out,
+                                 uint16_t out_cap,
+                                 const uint8_t uid12[12],
+                                 float volt,
+                                 float curr,
+                                 float temp,
+                                 uint8_t light_on,
+                                 uint8_t has_fft0,
+                                 float fft0_freq,
+                                 float fft0_amp,
+                                 uint32_t snap_count,
+                                 uint8_t ai_valid,
+                                 uint32_t ai_mse_x1000000,
+                                 int8_t ai_pred_value,
+                                 uint8_t ok,
+                                 uint8_t ttl,
+                                 uint8_t control_mode,
+                                 uint16_t on_time_min,
+                                 uint16_t off_time_min)
 {
     uint16_t off = 0u;
-    float volt_4dp = snap_round_4dp(volt);
-    float curr_4dp = snap_round_4dp(curr);
-    float temp_4dp = snap_round_4dp(temp);
-    uint8_t fft0_valid = (has_fft0 && isfinite(fft0_freq) && isfinite(fft0_amp) && fft0_freq > 0.0f && fft0_amp > 0.0f) ? 1u : 0u;
-    uint32_t freq_x100 = fft0_valid ? scale_fft_freq_x100(fft0_freq) : 0u;
-    int32_t amp_x1000 = fft0_valid ? scale_fft_amp_x1000(fft0_amp) : 0;
-    uint16_t snap_count16 = (uint16_t)(snap_count & 0xFFFFu);
-    uint16_t ai_mse16 = (ai_mse_x1000000 > 0xFFFFu) ? 0xFFFFu : (uint16_t)ai_mse_x1000000;
+    uint32_t fft_freq_x100 = 0u;
+    uint32_t fft_amp_x1000 = 0u;
+    uint16_t snap_count16;
+    uint16_t ai_mse16;
     uint8_t flags = 0u;
 
-    if (out == NULL || uid12 == NULL || out_cap < SNAP_COMPACT_BODY_LEN) {
+    if (out == NULL || uid12 == NULL) {
         return 0u;
     }
 
-    if (ai_valid) flags |= 0x01u;
-    if (ai_pred_value != 0) flags |= 0x02u;
-    if (ok) flags |= 0x04u;
+    if (out_cap < SNAP_COMPACT_BODY_LEN_V2) {
+        return 0u;
+    }
+
+    /*
+     * V1:
+     *  0       type
+     *  1       ttl
+     *  2~13    uid
+     * 14~17    voltage
+     * 18~21    current
+     * 22~25    temperature
+     * 26       light_on
+     * 27~30    FFT frequency x100
+     * 31~34    FFT amplitude x1000
+     * 35~36    snap_count16
+     * 37~38    ai_mse16
+     * 39       flags
+     *
+     * V2 추가:
+     * 40       control_mode
+     * 41~42    on_time_min, little-endian
+     * 43~44    off_time_min, little-endian
+     */
 
     out[off++] = 0x01u;
     out[off++] = ttl;
+
     memcpy(&out[off], uid12, 12u);
     off += 12u;
 
-    memcpy(&out[off], &volt_4dp, sizeof(volt_4dp));
-    off += (uint16_t)sizeof(volt_4dp);
-    memcpy(&out[off], &curr_4dp, sizeof(curr_4dp));
-    off += (uint16_t)sizeof(curr_4dp);
-    memcpy(&out[off], &temp_4dp, sizeof(temp_4dp));
-    off += (uint16_t)sizeof(temp_4dp);
+    memcpy(&out[off], &volt, sizeof(float));
+    off += (uint16_t)sizeof(float);
+
+    memcpy(&out[off], &curr, sizeof(float));
+    off += (uint16_t)sizeof(float);
+
+    memcpy(&out[off], &temp, sizeof(float));
+    off += (uint16_t)sizeof(float);
 
     out[off++] = light_on ? 1u : 0u;
 
-    memcpy(&out[off], &freq_x100, sizeof(freq_x100));
-    off += (uint16_t)sizeof(freq_x100);
-    memcpy(&out[off], &amp_x1000, sizeof(amp_x1000));
-    off += (uint16_t)sizeof(amp_x1000);
+    if (has_fft0) {
+        fft_freq_x100 = scale_fft_freq_x100(fft0_freq);
 
-    memcpy(&out[off], &snap_count16, sizeof(snap_count16));
-    off += (uint16_t)sizeof(snap_count16);
-    memcpy(&out[off], &ai_mse16, sizeof(ai_mse16));
-    off += (uint16_t)sizeof(ai_mse16);
+        {
+            int32_t scaled_amp = scale_fft_amp_x1000(fft0_amp);
+
+            if (scaled_amp > 0) {
+                fft_amp_x1000 = (uint32_t)scaled_amp;
+            } else {
+                fft_amp_x1000 = 0u;
+            }
+        }
+    }
+
+    out[off++] = (uint8_t)(fft_freq_x100 & 0xFFu);
+    out[off++] = (uint8_t)((fft_freq_x100 >> 8) & 0xFFu);
+    out[off++] = (uint8_t)((fft_freq_x100 >> 16) & 0xFFu);
+    out[off++] = (uint8_t)((fft_freq_x100 >> 24) & 0xFFu);
+
+    out[off++] = (uint8_t)(fft_amp_x1000 & 0xFFu);
+    out[off++] = (uint8_t)((fft_amp_x1000 >> 8) & 0xFFu);
+    out[off++] = (uint8_t)((fft_amp_x1000 >> 16) & 0xFFu);
+    out[off++] = (uint8_t)((fft_amp_x1000 >> 24) & 0xFFu);
+
+    snap_count16 = (uint16_t)(snap_count & 0xFFFFu);
+
+    out[off++] = (uint8_t)(snap_count16 & 0xFFu);
+    out[off++] = (uint8_t)((snap_count16 >> 8) & 0xFFu);
+
+    if (ai_mse_x1000000 > 0xFFFFu) {
+        ai_mse16 = 0xFFFFu;
+    } else {
+        ai_mse16 = (uint16_t)ai_mse_x1000000;
+    }
+
+    out[off++] = (uint8_t)(ai_mse16 & 0xFFu);
+    out[off++] = (uint8_t)((ai_mse16 >> 8) & 0xFFu);
+
+    /*
+     * flags
+     *
+     * bit 0: FFT 데이터 유효
+     * bit 1: AI 데이터 유효
+     * bit 2: AI 예측값
+     * bit 7: SNAP 처리 성공
+     */
+    if (has_fft0) {
+        flags |= 0x01u;
+    }
+
+    if (ai_valid) {
+        flags |= 0x02u;
+
+        if (ai_pred_value != 0) {
+            flags |= 0x04u;
+        }
+    }
+
+    if (ok) {
+        flags |= 0x80u;
+    }
 
     out[off++] = flags;
+
+    /* Compact SNAP V2 추가 필드 */
+    out[off++] = control_mode;
+
+    out[off++] = (uint8_t)(on_time_min & 0xFFu);
+    out[off++] = (uint8_t)((on_time_min >> 8) & 0xFFu);
+
+    out[off++] = (uint8_t)(off_time_min & 0xFFu);
+    out[off++] = (uint8_t)((off_time_min >> 8) & 0xFFu);
 
     return off;
 }
 
 bool is_compact_snap_body(const uint8_t *data, uint16_t len)
 {
-    return data != NULL &&
-           len == SNAP_COMPACT_BODY_LEN &&
-           data[0] == 0x01u;
+    if (data == NULL) {
+        return false;
+    }
+
+    if (data[SNAP_COMPACT_TYPE_IDX] != 0x01u) {
+        return false;
+    }
+
+    return (len == SNAP_COMPACT_BODY_LEN_V1 ||
+            len == SNAP_COMPACT_BODY_LEN_V2);
 }
 
 uint16_t compact_snap_count16(const uint8_t *data)
