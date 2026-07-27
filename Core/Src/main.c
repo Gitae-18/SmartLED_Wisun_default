@@ -245,6 +245,10 @@ typedef struct {
 #define WISUN_AT_COMMAND_ENABLE 0
 #endif
 
+#ifndef DEBUG_FFT_DATA_EXTRACT_MODE
+#define DEBUG_FFT_DATA_EXTRACT_MODE 1
+#endif
+
 #ifndef WISUN_IDLE_RESET_ENABLE
 #define WISUN_IDLE_RESET_ENABLE 1
 #endif
@@ -298,7 +302,9 @@ typedef struct {
 #define FIRST_BOOT  0x22
 #define GETID       0x23
 #define SET_SETTING    0x31
-#define SET_SETTING_ACK 0x32
+#define SET_SETTING_ACK 0x10
+#define LIGHT_OFF_ACK 0x32
+#define LIGHT_ON_ACK 0x33
 #define GET_NODE_INFO 0x40
 #define SET_ASTRO_SETTING 0x45
 #define GET_CH 0x24
@@ -962,7 +968,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 g_last_light_control_tick = HAL_GetTick();
 
                 PowerCtrlAckBin_t ack = {0};
-                ack.t = 0x10;
+                ack.t = LIGHT_ON_ACK;
                 memcpy(ack.uid, uid12, 12);
                 ack.msg_id = msg_id;
                 ack.ok = 1;
@@ -988,7 +994,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 g_last_light_control_tick = HAL_GetTick();
 
                 PowerCtrlAckBin_t ack = {0};
-                ack.t = 0x10;
+                ack.t = LIGHT_OFF_ACK;
                 memcpy(ack.uid, uid12, 12);
                 ack.msg_id = msg_id;
                 ack.ok = 1;
@@ -3169,6 +3175,22 @@ int main(void)
 	             (void)HAL_ADC_Start_IT(&hadc1);
 	         }*/
 
+#if DEBUG_FFT_DATA_EXTRACT_MODE
+	         if (ultra_frame_ready) {
+	             __disable_irq();
+	             ultra_frame_ready = 0;
+	             __enable_irq();
+
+	             HAL_ADC_Stop_DMA(&hadc1);
+	             HAL_TIM_Base_Stop(&htim6);
+
+	             ultra_sampling_paused = 1;
+
+	             Debug_Print_FFT_Peak();
+	         }
+
+	         continue;
+#else
 			  /* if (ultra_frame_ready) {
 				  __disable_irq();
 				  ultra_frame_ready = 0;
@@ -3183,6 +3205,7 @@ int main(void)
 
 				  Ultra_StartDmaFrame();
 			  } */
+#endif
 
 	         //===================== AT RX =====================
 	         if (g_at_line_ready)
@@ -4683,273 +4706,340 @@ void nodeinfo_finish_fail(int8_t err)
 
 void Debug_Print_FFT_Peak(void)
 {
+    static uint32_t fft_seq = 0;
+    static uint32_t dbg_t = 0;
 
-    /*if (!ultra_frame_ready) return;   
-        ultra_frame_ready = 0;*/
-        static uint32_t fft_seq = 0;
-		static uint32_t dbg_t = 0;
-        
-        InitHannWindowOnce();
+    InitHannWindowOnce();
 
-        uint32_t my_seq = ++fft_seq;
-        
-        float vin_v = 0.0f;
-        float i_adc_v = 0.0f;
-        {
-            VIRead vi;
-            if (AD_DC_Injected_Once(&vi) == HAL_OK) {
-                vin_v   = adc_raw_to_dc_vin(vi.volt_raw);
-                i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
-            }
+    uint32_t my_seq = ++fft_seq;
+
+    float vin_v = 0.0f;
+    float i_adc_v = 0.0f;
+    {
+        VIRead vi;
+        if (AD_DC_Injected_Once(&vi) == HAL_OK) {
+            vin_v   = adc_raw_to_dc_vin(vi.volt_raw);
+            i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
         }
+    }
 
-        static float32_t x[FFT_SIZE];        
+    static float32_t x[FFT_SIZE];
+    uint16_t adc_min = 0xFFFFu;
+    uint16_t adc_max = 0u;
 
-        /*__disable_irq();
-        ultra_frame_ready = false;
-        __enable_irq();*/
+    for (int i = 0; i < FFT_SIZE; i++) {
+        uint16_t raw = raw_buffer[i];
+
+        if (raw < adc_min) adc_min = raw;
+        if (raw > adc_max) adc_max = raw;
+
+        x[i] = ((float)raw * 3.3f / 4095.0f) - 1.65f;
+    }
+
+    uint16_t adc_span = (uint16_t)(adc_max - adc_min);
+    uint8_t ultra_signal_ok =
+        (adc_span >= SNAP_FFT_ADC_RAW_SPAN_MIN) ? 1u : 0u;
+
+    /* DWT 기반 프레임 시간은 진단용으로만 사용 */
+    uint32_t c0 = g_frame_c0;
+    uint32_t c1 = g_frame_c1;
+    uint32_t dc = (c1 >= c0)
+        ? (c1 - c0)
+        : (0xFFFFFFFFu - c0 + c1 + 1u);
+
+    float dt_s = (float)dc / (float)SystemCoreClock;
+    float dt_ms = dt_s * 1e3f;
+    float fs_eff = (dt_s > 1e-9f)
+        ? ((float)FFT_SIZE / dt_s)
+        : 0.0f;
+
+    uint32_t now = HAL_GetTick();
+#if !DEBUG_FFT_DATA_EXTRACT_MODE
+    if ((now - dbg_t) >= 1000u) {
+        dbg_t = now;
+
+        float mn = 1e9f;
+        float mx = -1e9f;
 
         for (int i = 0; i < FFT_SIZE; i++) {
-		   uint16_t raw = raw_buffer[i];
-		   x[i] = ((float)raw * 3.3f / 4095.0f) - 1.65f;
-	   }
-        uint32_t c0 = g_frame_c0;
-        uint32_t c1 = g_frame_c1;
-        uint32_t dc = (c1 >= c0) ? (c1 - c0) : (0xFFFFFFFFu - c0 + c1 + 1u);
-
-        float dt_s  = (float)dc / (float)SystemCoreClock;
-        float dt_us = dt_s * 1e6f;
-        float dt_ms = dt_s * 1e3f;
-        float fs_eff = (dt_s > 1e-9f) ? ((float)FFT_SIZE / dt_s) : 0.0f;
-        /*uart6_log("[DTDBG] c0=%lu c1=%lu dc=%lu SystemCoreClock=%lu FFT_SIZE=%u dt_ms=%.3f fs_eff=%.1f\r\n",
-                  (unsigned long)c0, (unsigned long)c1, (unsigned long)dc,
-                  (unsigned long)SystemCoreClock, (unsigned)FFT_SIZE, dt_ms, fs_eff);*/
-
-        /*int zc = 0;
-        for (int i = 1; i < FFT_SIZE; i++) {
-            float a = x[i-1];
-            float b = x[i];
-            if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f)) zc++;
-        }
-        float f_zc = 0.0f;
-        if (fs_eff > 1.0f) {
-            // crossing 2 = 1주기 가정되므로 1주기당 2번 crossing 발생 0.5 곱함
-            f_zc = ((float)zc * 0.5f) * (fs_eff / (float)FFT_SIZE);
+            if (x[i] < mn) mn = x[i];
+            if (x[i] > mx) mx = x[i];
         }
 
-        char b[160];
-        int n = snprintf(b, sizeof(b),
-            "[RAWCHK] dt=%.2fms fs_eff=%.1fHz zc=%d f_zc=%.1fkHz\r\n",
-            (double)dt_ms, (double)fs_eff, zc, (double)(f_zc/1000.0f));
-        HAL_UART_Transmit(&huart6, (uint8_t*)b, (uint16_t)n, 20);*/
+        char tbuf[160];
+        int tn = snprintf(
+            tbuf,
+            sizeof(tbuf),
+            "[IN] min=%.6f max=%.6f p2p=%.6f raw_min=%u raw_max=%u span=%u\r\n",
+            (double)mn,
+            (double)mx,
+            (double)(mx - mn),
+            (unsigned)adc_min,
+            (unsigned)adc_max,
+            (unsigned)adc_span
+        );
 
-        
-        uint32_t now = HAL_GetTick();
-        if ((now - dbg_t) >= 1000u) {
-            dbg_t = now;
-            float mn = 1e9f, mx = -1e9f;
-            for (int i = 0; i < FFT_SIZE; i++) {
-                if (x[i] < mn) mn = x[i];
-                if (x[i] > mx) mx = x[i];
-            }
-            char tbuf[120];
-			int tn = snprintf(tbuf, sizeof(tbuf),
-				"[IN] min=%.6f max=%.6f p2p=%.6f\r\n",
-				(double)mn, (double)mx, (double)(mx - mn)
-			);
+        if (tn < 0) tn = 0;
+        if (tn > (int)sizeof(tbuf)) tn = (int)sizeof(tbuf);
 
-			if (tn < 0) tn = 0;
-			if (tn > (int)sizeof(tbuf)) tn = (int)sizeof(tbuf);
+        HAL_StatusTypeDef st2 = HAL_UART_Transmit(
+            &huart6,
+            (uint8_t*)tbuf,
+            (uint16_t)tn,
+            20
+        );
 
-			HAL_StatusTypeDef st2 = HAL_UART_Transmit(&huart6, (uint8_t*)tbuf, (uint16_t)tn, 20);
-			if (st2 != HAL_OK) uart_fail_cnt++;
-        }
+        if (st2 != HAL_OK) uart_fail_cnt++;
+    }
+#else
+    (void)now;
+    (void)dbg_t;
+#endif
 
-        /* ---- FFT -> magnitude (ExtractFullFFT) ---- */
-        static float32_t mag[FFT_SIZE/2];
-        ExtractFullFFT_MagOnly(x, mag);
-    
-        const float lo_hz = 80000.0f;
-        const float hi_hz = 130000.0f;
+    /* SNAP과 동일한 FFT 전처리 */
+    static float32_t mag[FFT_SIZE / 2];
+    ExtractFullFFT_MagOnly(x, mag);
 
-        float fs = (fs_eff > 1.0f) ? fs_eff : (float)FSAMPLE;
-        float nyq = 0.5f * fs;
+    const float lo_hz = 80000.0f;
+    const float hi_hz = 125000.0f;
 
-        float lo = lo_hz;
-        float hi = hi_hz;
-        
-        const float guard = 3000.0f;         
-        if (hi > nyq - guard) hi = nyq - guard;
-        if (lo < 1.0f) lo = 1.0f;
+    /* SNAP과 동일하게 TIM6 설정 기반 샘플링 주파수 사용 */
+    float fs = tim6_sample_rate_hz();
+    if (fs <= 1.0f || !isfinite(fs)) {
+        fs = (float)FSAMPLE;
+    }
 
-        if (lo >= hi) {
-            char buf[160];
-            int len = snprintf(buf, sizeof(buf),
-                "[FFT#%lu] fs=%.1fk nyq=%.1fk lo/hi invalid (lo=%.1fk hi=%.1fk)\r\n",
-                (unsigned long)my_seq,
-                (double)(fs/1000.0f), (double)(nyq/1000.0f),
-                (double)(lo/1000.0f), (double)(hi/1000.0f));
-            HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, 20);
-            //Ultra_ResumeNextFrame();
-            Ultra_StartDmaFrame();
-            return;
-        }
-                
+    float nyq = 0.5f * fs;
+    float lo = lo_hz;
+    float hi = hi_hz;
 
+    if (hi > nyq) hi = nyq;
+    if (lo < 1.0f) lo = 1.0f;
 
-        float max_amp = 0.0f;
-        float peak_f  = 0.0f;
-        int peak_i  = -1;
+    if (lo >= hi) {
+        char buf[180];
+        int len = snprintf(
+            buf,
+            sizeof(buf),
+            "[FFT#%lu] fs=%.1fk nyq=%.1fk lo/hi invalid "
+            "(lo=%.1fk hi=%.1fk)\r\n",
+            (unsigned long)my_seq,
+            (double)(fs / 1000.0f),
+            (double)(nyq / 1000.0f),
+            (double)(lo / 1000.0f),
+            (double)(hi / 1000.0f)
+        );
 
-        float min_amp = 1e30f;
-        float min_f   = 0.0f;
-        int   min_i   = -1;
+        HAL_UART_Transmit(
+            &huart6,
+            (uint8_t*)buf,
+            (uint16_t)len,
+            20
+        );
 
-        float sum = 0.0f;
-        int   cnt = 0;
-        float top1 = 0.0f, top2 = 0.0f, top3 = 0.0f;
-
-        for (int i = 1; i < (FFT_SIZE/2); i++) {
-        	float freq = ((float)i * fs) / (float)FFT_SIZE;
-        	if (freq < lo || freq > hi) continue;
-
-            float a = mag[i];
-
-            if (a > max_amp) {
-                max_amp = a;
-                peak_f  = freq;
-                peak_i  = i;
-            }
-
-            if (a < min_amp) {
-			   min_amp = a;
-			   min_f   = freq;
-			   min_i   = i;
-		   }
-
-            sum += a;
-            cnt++;
-
-            if (a > top1) { top3 = top2; top2 = top1; top1 = a; }
-            else if (a > top2) { top3 = top2; top2 = a; }
-            else if (a > top3) { top3 = a; }
-
-            if (a < min_amp) { min_amp = a; min_f = freq; min_i = i; }
-            if (min_i < 0) {
-              min_amp = 0.0f;
-              min_f   = 0.0f;
-            }
-        }
-        if (cnt == 0) {
-            min_amp = 0.0f;
-            min_f = 0.0f;
-            min_i   = -1;
-        }
-        if (peak_i >= 2 && peak_i <= (FFT_SIZE/2 - 2)) {
-            float a0 = mag[peak_i - 1];
-            float a1 = mag[peak_i];
-            float a2 = mag[peak_i + 1];
-            
-            float a_rss = sqrtf(a0*a0 + a1*a1 + a2*a2);
-
-            max_amp = a_rss;
-        }
-
-        float noise_floor = 0.0f;
-        if (cnt > 0) {
-            float trimmed = sum - (top1 + top2 + top3);
-            int trimmed_cnt = cnt - 3;
-            if (trimmed_cnt < 1) { trimmed = sum; trimmed_cnt = cnt; }
-            noise_floor = trimmed / (float)trimmed_cnt;
-        }
-        if (noise_floor < NOISE_MIN) noise_floor = NOISE_MIN;
-
-        const float N  = (float)FFT_SIZE;
-        const float CG = 0.5f;                 // Hann coherent gain(근사)
-        
-        float vpk  = (2.0f / (N * CG)) * max_amp;   // ??(4/N)*max_amp
-        float mvpk = vpk * 1000.0f;
-
-        float vpp  = 2.0f * vpk;
-        float mvpp = vpp * 1000.0f;
-
-        float vrms = vpk * 0.70710678f;         // = vpk/sqrt(2)
-
-        float adc_pk  = vpk * (4095.0f / 3.3f);
-        float adc_pp  = vpp * (4095.0f / 3.3f);
-
-        float snr = (noise_floor > 0.0f) ? (max_amp / noise_floor) : 0.0f;
-        bool found = (cnt > 0) && (snr > FFT_SNR_K);
-        //bool found = (cnt > 0) && (max_amp > (noise_floor * FFT_SNR_K));
-        
-        {
-            char buf[420];
-            int len;
-
-            if (found) {
-                len = snprintf(buf, sizeof(buf),
-                    "[FFT#%lu] found=1 peak=%.2fkHz bin=%d "
-                    "max=%.3g min=%.3g@%.2fkHz "
-                    "vpk=%.4fV vpp=%.4fV vrms=%.4fV "
-                    "adc_pk=%.1f adc_pp=%.1f "
-                    "nf=%.3g snr=%.2f cnt=%d "
-                    "dt=%.2fms fs_eff=%.1fk fs=%.1fk nyq=%.1fk lo=%.1fk hi=%.1fk "
-                    "vin=%.2fV i=%.2fA\r\n",
-                    (unsigned long)my_seq,
-                    (double)(peak_f/1000.0f),
-                    peak_i,
-                    (double)max_amp,
-                    (double)min_amp,
-                    (double)(min_f/1000.0f),
-                    (double)vpk,
-                    (double)vpp,
-                    (double)vrms,
-                    (double)adc_pk,
-                    (double)adc_pp,
-                    (double)noise_floor,
-                    (double)snr,
-                    cnt,
-                    (double)dt_ms,
-                    (double)(fs_eff/1000.0f),
-                    (double)(fs/1000.0f),
-                    (double)(nyq/1000.0f),
-                    (double)(lo/1000.0f),
-                    (double)(hi/1000.0f),
-                    (double)vin_v,
-                    (double)i_adc_v
-                );
-            } else {
-                len = snprintf(buf, sizeof(buf),
-                    "[FFT#%lu] found=0 peak=%.2fkHz bin=%d "
-                    "max=%.3g min=%.3g@%.2fkHz "
-                    "nf=%.3g snr=%.2f cnt=%d "
-                    "dt=%.2fms fs_eff=%.1fk fs=%.1fk nyq=%.1fk lo=%.1fk hi=%.1fk "
-                    "vin=%.2fV i=%.2fA\r\n",
-                    (unsigned long)my_seq,
-                    (double)(peak_f/1000.0f),
-                    peak_i,
-                    (double)max_amp,
-                    (double)min_amp,
-                    (double)(min_f/1000.0f),
-                    (double)noise_floor,
-                    (double)snr,
-                    cnt,
-                    (double)dt_ms,
-                    (double)(fs_eff/1000.0f),
-                    (double)(fs/1000.0f),
-                    (double)(nyq/1000.0f),
-                    (double)(lo/1000.0f),
-                    (double)(hi/1000.0f),
-                    (double)vin_v,
-                    (double)i_adc_v
-                );
-            }
-            uint32_t tmo = 5 + (uint32_t)((len * 10u * 1000u) / 115200u);
-            HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t*)buf, (uint16_t)len, tmo);
-            if (st != HAL_OK) uart_fail_cnt++;
-        }
-        
         Ultra_StartDmaFrame();
+        return;
+    }
+
+    float max_amp = -1.0f;
+    float peak_f = 0.0f;
+    int peak_i = -1;
+
+    float min_amp = 1e30f;
+    float min_f = 0.0f;
+    int min_i = -1;
+
+    float sum = 0.0f;
+    int cnt = 0;
+    float top1 = 0.0f;
+    float top2 = 0.0f;
+    float top3 = 0.0f;
+
+    for (int i = 1; i < (FFT_SIZE / 2); i++) {
+        float freq = ((float)i * fs) / (float)FFT_SIZE;
+        if (freq < lo || freq > hi) continue;
+
+        float a = mag[i];
+        if (!isfinite(a)) a = 0.0f;
+
+        if (a > max_amp) {
+            max_amp = a;
+            peak_f = freq;
+            peak_i = i;
+        }
+
+        if (a < min_amp) {
+            min_amp = a;
+            min_f = freq;
+            min_i = i;
+        }
+
+        sum += a;
+        cnt++;
+
+        if (a > top1) {
+            top3 = top2;
+            top2 = top1;
+            top1 = a;
+        } else if (a > top2) {
+            top3 = top2;
+            top2 = a;
+        } else if (a > top3) {
+            top3 = a;
+        }
+    }
+
+    if (cnt == 0 || peak_i < 0) {
+        max_amp = 0.0f;
+        peak_f = 0.0f;
+        peak_i = -1;
+        min_amp = 0.0f;
+        min_f = 0.0f;
+        min_i = -1;
+    }
+
+    /* SNAP과 동일한 peak bin ±1의 3-bin RSS */
+    if (peak_i >= 2 && peak_i <= (FFT_SIZE / 2 - 2)) {
+        float a0 = mag[peak_i - 1];
+        float a1 = mag[peak_i];
+        float a2 = mag[peak_i + 1];
+
+        max_amp = sqrtf(a0 * a0 + a1 * a1 + a2 * a2);
+    }
+
+    /* SNR은 유효 판정이 아닌 참고 로그로만 유지 */
+    float noise_floor = 0.0f;
+    if (cnt > 0) {
+        float trimmed = sum - (top1 + top2 + top3);
+        int trimmed_cnt = cnt - 3;
+
+        if (trimmed_cnt < 1) {
+            trimmed = sum;
+            trimmed_cnt = cnt;
+        }
+
+        noise_floor = trimmed / (float)trimmed_cnt;
+    }
+
+    if (noise_floor < NOISE_MIN) {
+        noise_floor = NOISE_MIN;
+    }
+
+    float snr = (noise_floor > 0.0f)
+        ? (max_amp / noise_floor)
+        : 0.0f;
+
+    /* SNAP과 동일한 최종 유효 조건 */
+    bool found =
+        (peak_i >= 0) &&
+        (cnt > 0) &&
+        (ultra_signal_ok != 0u) &&
+        (max_amp >= SNAP_FFT_VALID_AMP_MIN);
+
+    const float N = (float)FFT_SIZE;
+    const float CG = 0.5f;
+
+    float vpk = found
+        ? ((2.0f / (N * CG)) * max_amp)
+        : 0.0f;
+
+    float vpp = 2.0f * vpk;
+    float vrms = vpk * 0.70710678f;
+    float adc_pk = vpk * (4095.0f / 3.3f);
+    float adc_pp = vpp * (4095.0f / 3.3f);
+
+    {
+        char buf[460];
+        int len = snprintf(
+            buf,
+            sizeof(buf),
+            "[FFT#%lu] found=%u peak=%.2fkHz bin=%d "
+            "max=%.3g min=%.3g@%.2fkHz "
+            "vpk=%.4fV vpp=%.4fV vrms=%.4fV "
+            "adc_pk=%.1f adc_pp=%.1f "
+            "span=%u span_min=%u amp_min=%.3f "
+            "nf=%.3g snr=%.2f cnt=%d "
+            "dt=%.2fms fs_eff=%.1fk fs=%.1fk nyq=%.1fk "
+            "lo=%.1fk hi=%.1fk vin=%.2fV i=%.2fA\r\n",
+            (unsigned long)my_seq,
+            (unsigned)(found ? 1u : 0u),
+            (double)(peak_f / 1000.0f),
+            peak_i,
+            (double)max_amp,
+            (double)min_amp,
+            (double)(min_f / 1000.0f),
+            (double)vpk,
+            (double)vpp,
+            (double)vrms,
+            (double)adc_pk,
+            (double)adc_pp,
+            (unsigned)adc_span,
+            (unsigned)SNAP_FFT_ADC_RAW_SPAN_MIN,
+            (double)SNAP_FFT_VALID_AMP_MIN,
+            (double)noise_floor,
+            (double)snr,
+            cnt,
+            (double)dt_ms,
+            (double)(fs_eff / 1000.0f),
+            (double)(fs / 1000.0f),
+            (double)(nyq / 1000.0f),
+            (double)(lo / 1000.0f),
+            (double)(hi / 1000.0f),
+            (double)vin_v,
+            (double)i_adc_v
+        );
+
+        if (len < 0) len = 0;
+        if (len > (int)sizeof(buf)) len = (int)sizeof(buf);
+
+        uint32_t tmo =
+            5u + (uint32_t)((len * 10u * 1000u) / 115200u);
+
+        HAL_StatusTypeDef st = HAL_UART_Transmit(
+            &huart6,
+            (uint8_t*)buf,
+            (uint16_t)len,
+            tmo
+        );
+
+        if (st != HAL_OK) uart_fail_cnt++;
+    }
+
+#if DEBUG_FFT_DATA_EXTRACT_MODE
+    {
+        char data_buf[220];
+        int data_len = snprintf(
+            data_buf,
+            sizeof(data_buf),
+            "[FFT_DATA] seq=%lu found=%u freq_hz=%.2f amp=%.6g vin_v=%.3f curr_a=%.3f "
+            "span=%u fs_hz=%.1f vpk=%.6f adc_pk=%.2f\r\n",
+            (unsigned long)my_seq,
+            (unsigned)(found ? 1u : 0u),
+            (double)peak_f,
+            (double)max_amp,
+            (double)vin_v,
+            (double)i_adc_v,
+            (unsigned)adc_span,
+            (double)fs,
+            (double)vpk,
+            (double)adc_pk
+        );
+
+        if (data_len < 0) data_len = 0;
+        if (data_len > (int)sizeof(data_buf)) data_len = (int)sizeof(data_buf);
+
+        HAL_StatusTypeDef data_st = HAL_UART_Transmit(
+            &huart6,
+            (uint8_t*)data_buf,
+            (uint16_t)data_len,
+            30
+        );
+
+        if (data_st != HAL_OK) uart_fail_cnt++;
+    }
+#endif
+
+    Ultra_StartDmaFrame();
 }
 
 
