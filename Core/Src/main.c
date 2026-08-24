@@ -30,31 +30,32 @@
 #include <inttypes.h>
 #include "stm32h5xx_hal.h"
 #include "common.h"
-#include "fft.h"
-#include "memory.h"
+#include "signal/fft.h"
+#include "utils/memory.h"
 #include <stdbool.h>
 #include "dma_linkedlist.h"
-#include "cbor_format.h"
-#include "wisun_frame.h"
-#include "wisun_transport.h"
-#include "storage_mid.h"
+#include "utils/cbor_format.h"
+#include "protocol/wisun/wisun_frame.h"
+#include "protocol/wisun/wisun_transport.h"
+#include "services/storage_mid.h"
 #include <math.h>
-#include "storage_cfg.h"
-#include "solar_calc.h"
+#include "services/storage_cfg.h"
+#include "services/solar_calc.h"
 #include "app_x-cube-ai.h"
-#include "quant.h"
+#include "signal/quant.h"
 #include <stdarg.h>
 #include "APP/network.h"
 #include <assert.h>
-#include "adc_user.h"
-#include "light_control.h"
-#include "rtc_user.h"
-#include "debug_log.h"
-#include "sensor_measure.h"
-#include "snapshot.h"
-#include "wisun_app.h"
-#include "wisun_router.h"
-#include "light_event.h"
+#include "platform/adc_user.h"
+#include "services/light_control.h"
+#include "services/rtc_user.h"
+#include "utils/debug_log.h"
+#include "services/sensor_measure.h"
+#include "services/snapshot.h"
+#include "protocol/wisun/wisun_app.h"
+#include "protocol/wisun/wisun_router.h"
+#include "services/light_event.h"
+#include "services/ai_settings.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,6 +82,16 @@ typedef enum {
     RESP_KIND_RAW_BIN,  
     RESP_KIND_LIGHT_ACK,
 } resp_kind_t;
+
+typedef enum {
+    SENSOR_PIPELINE_IDLE = 0,
+    SENSOR_PIPELINE_CAPTURING,
+    SENSOR_PIPELINE_PROCESSING
+} sensor_pipeline_state_t;
+
+#define SENSOR_CAPTURE_SNAPSHOT     (1u << 0)
+#define SENSOR_CAPTURE_AI           (1u << 1)
+#define SENSOR_CAPTURE_MEASURE_ONLY (1u << 2)
 
 typedef struct {
     uint8_t      pending;      
@@ -246,7 +257,7 @@ typedef struct {
 #endif
 
 #ifndef DEBUG_FFT_DATA_EXTRACT_MODE
-#define DEBUG_FFT_DATA_EXTRACT_MODE 1
+#define DEBUG_FFT_DATA_EXTRACT_MODE 0
 #endif
 
 #ifndef WISUN_IDLE_RESET_ENABLE
@@ -311,6 +322,21 @@ typedef struct {
 #define SET_CH 0x25
 #define T_GET_CH_RESP 0x24
 #define CMD_ACK_RELAY 0x7E
+#ifndef SNAP_REPORT_ACK_ENABLE
+#define SNAP_REPORT_ACK_ENABLE 0
+#endif
+
+#if SNAP_REPORT_ACK_ENABLE
+/* Gateway report ACK transport:
+ *   cmd=0x16, msg_id=original report msg_id,
+ *   body[0]=original report cmd (0x12 or 0x15), body[1]=ok (0/1).
+ * For compact SNAP, msg_id is the little-endian snap_count16 at body[35..36].
+ */
+#define SNAP_RX_ACK_CMD 0x16u
+#define REPORT_ACK_SLOT_COUNT 4u
+#define REPORT_ACK_TIMEOUT_MS 5000u
+#define REPORT_ACK_MAX_ATTEMPTS 3u
+#endif
 
 #define SNAP_FFT_ADC_RAW_SPAN_MIN   30u
 #define SNAP_FFT_VALID_AMP_MIN      0.5f
@@ -338,8 +364,32 @@ typedef struct {
     uint16_t target_mid;
     uint8_t  cmd;
     uint16_t msg_id;
+    uint32_t payload_sig;
     uint32_t tick;
 } ctrl_dedup_entry_t;
+
+typedef struct {
+    uint8_t valid;
+    uint16_t src_mid;
+    uint16_t target_mid;
+    uint8_t cmd;
+    uint16_t msg_id;
+    uint32_t tick;
+    PowerCtrlAckBin_t ack;
+} light_ctrl_dedup_entry_t;
+
+#if SNAP_REPORT_ACK_ENABLE
+typedef struct {
+    uint8_t  pending;
+    uint8_t  compact;
+    uint8_t  report_cmd;
+    uint8_t  attempts;
+    uint16_t msg_id;
+    uint16_t body_len;
+    uint32_t last_tx_tick;
+    uint8_t  body[128];
+} report_ack_slot_t;
+#endif
 
 /* USER CODE END PD */
 
@@ -372,10 +422,12 @@ extern ADC_HandleTypeDef hadc2;
 PacketParserState packet_state = WAITING_FOR_STX;
 
 node_cfg_t g_node_cfg;
+static ai_settings_t g_ai_settings;
 static resp_slot_t g_resp_slot;
 static resp_slot_t g_resp_q[RESP_QUEUE_SIZE];
 hop_slot_t g_hop_q[HOP_QUEUE_SIZE];
 uint32_t g_hop_seen_keys[HOP_SEEN_TABLE_SIZE];
+uint32_t g_hop_seen_ticks[HOP_SEEN_TABLE_SIZE];
 uint8_t g_hop_seen_count;
 uint8_t g_hop_seen_pos;
 
@@ -418,7 +470,7 @@ static nodeinfo_ctx_t g_nodeinfo = {0};
 volatile uint32_t g_monitor_count = 0;
 static volatile int       wr_idx           = 0;
 static volatile bool     ultra_frame_ready = false;
-static volatile bool     ultra_sampling_paused = false;
+static volatile bool     ultra_sampling_paused = true;
 
 volatile uint32_t g_frame_c0 = 0;
 volatile uint32_t g_frame_c1 = 0;
@@ -441,7 +493,21 @@ static uint8_t  g_last_has_msg_id  = 0;
 static uint8_t  g_last_has_cmd     = 0;
 static ctrl_dedup_entry_t g_ctrl_dedup[CTRL_DEDUP_CACHE_SIZE];
 static uint8_t g_ctrl_dedup_pos = 0u;
+static light_ctrl_dedup_entry_t g_light_ctrl_dedup[CTRL_DEDUP_CACHE_SIZE];
+static uint8_t g_light_ctrl_dedup_pos = 0u;
+#if SNAP_REPORT_ACK_ENABLE
+static report_ack_slot_t g_report_ack_slots[REPORT_ACK_SLOT_COUNT];
+#endif
 static volatile uint8_t g_snapshot_suppress_next_tx = 0u;
+static volatile uint8_t g_sensor_capture_pending = 0u;
+static uint8_t g_sensor_capture_active = 0u;
+static sensor_pipeline_state_t g_sensor_pipeline_state = SENSOR_PIPELINE_IDLE;
+static uint16_t g_sensor_snapshot_req_msg_id = 0u;
+static uint32_t g_ai_last_request_tick = 0u;
+static uint32_t g_ai_last_rtc_slot = UINT32_MAX;
+static uint8_t g_ai_result_valid = 0u;
+static uint32_t g_ai_result_mse_x1000000 = 0u;
+static int8_t g_ai_result_pred = 0;
 
 static uint8_t boot_cfg_started = 0;
 
@@ -533,7 +599,9 @@ static void InitHannWindowOnce(void);
 //void StreetLight_ToggleTask(void);
 static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, uint16_t target_mid, const uint8_t *data, uint16_t len);
 static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len);
-static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id);
+static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id, const uint8_t *data, uint16_t len);
+static uint8_t light_ctrl_dedup_find(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id, PowerCtrlAckBin_t *ack_out);
+static void light_ctrl_dedup_store(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id, const PowerCtrlAckBin_t *ack);
 static void mid_pack_uid12(uint8_t out12[12]);
 static uint16_t my_strnlen(const char *s, uint16_t maxn);
 bool node_is_provisioned(void);
@@ -570,9 +638,19 @@ static void wisun_idle_reset_poll(uint32_t now);
 // void SendDataPacket(uint16_t target_mid, uint8_t *data, uint16_t data_length);
 void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id);
 void snapshot_suppress_next_tx(void);
+void sensor_capture_request_snapshot(uint16_t req_msg_id);
+static void sensor_capture_request(uint8_t requests, uint16_t req_msg_id);
+static void sensor_pipeline_poll(uint32_t now);
+static void ai_schedule_reconfigure(void);
+static void ai_schedule_poll(uint32_t now);
 static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t msg_id, const uint8_t *raw, uint16_t raw_len);
 //static bool send_wisun_resp(uint16_t tmid, const uint8_t *cbor, size_t cbor_len);
 static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len);
+static uint8_t report_send_tracked(uint8_t compact, uint8_t report_cmd, uint16_t msg_id, const uint8_t *body, uint16_t body_len);
+#if SNAP_REPORT_ACK_ENABLE
+static void report_ack_poll(uint32_t now);
+static void report_ack_handle(uint8_t report_cmd, uint16_t msg_id, uint8_t ok);
+#endif
 void Ultra_ResumeNextFrame(void);
 void Ultra_StartSampling(void);
 void Ultra_StartDmaFrame(void);
@@ -634,6 +712,11 @@ uint8_t light_event_send_transport(uint16_t target_mid,
                                    const uint8_t *body,
                                    uint16_t body_len)
 {
+    if (target_mid == 0u && ttl == 0u && flags == 0u &&
+        cmd == LIGHT_STATE_EVENT_CMD) {
+        return report_send_tracked(0u, cmd, msg_id, body, body_len);
+    }
+
     return send_transport_direct(target_mid, ttl, cmd, flags, msg_id, body, body_len);
 }
 
@@ -906,9 +989,24 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 
 
-static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, uint8_t cmd, uint16_t msg_id)
+static uint32_t ctrl_payload_signature(const uint8_t *data, uint16_t len)
+{
+    uint32_t h = 2166136261u;
+
+    for (uint16_t i = 0u; i < len; ++i) {
+        h ^= data[i];
+        h *= 16777619u;
+    }
+    h ^= len;
+    return h;
+}
+
+static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid,
+                                         uint8_t cmd, uint16_t msg_id,
+                                         const uint8_t *data, uint16_t len)
 {
     uint32_t now = HAL_GetTick();
+    uint32_t payload_sig = ctrl_payload_signature(data, len);
 
     if (msg_id == 0u) {
         return 0u;
@@ -927,8 +1025,10 @@ static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, 
         }
 
         if (e->target_mid == target_mid &&
+            e->src_mid == src_mid &&
             e->cmd == cmd &&
-            e->msg_id == msg_id) {
+            e->msg_id == msg_id &&
+            e->payload_sig == payload_sig) {
             return 1u;
         }
     }
@@ -938,10 +1038,66 @@ static uint8_t ctrl_dedup_check_and_mark(uint16_t src_mid, uint16_t target_mid, 
     g_ctrl_dedup[g_ctrl_dedup_pos].target_mid = target_mid;
     g_ctrl_dedup[g_ctrl_dedup_pos].cmd = cmd;
     g_ctrl_dedup[g_ctrl_dedup_pos].msg_id = msg_id;
+    g_ctrl_dedup[g_ctrl_dedup_pos].payload_sig = payload_sig;
     g_ctrl_dedup[g_ctrl_dedup_pos].tick = now;
     g_ctrl_dedup_pos = (uint8_t)((g_ctrl_dedup_pos + 1u) % CTRL_DEDUP_CACHE_SIZE);
 
     return 0u;
+}
+
+static uint8_t light_ctrl_dedup_find(uint16_t src_mid, uint16_t target_mid,
+                                     uint8_t cmd, uint16_t msg_id,
+                                     PowerCtrlAckBin_t *ack_out)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (msg_id == 0u || ack_out == NULL) {
+        return 0u;
+    }
+
+    for (uint8_t i = 0u; i < CTRL_DEDUP_CACHE_SIZE; ++i) {
+        light_ctrl_dedup_entry_t *e = &g_light_ctrl_dedup[i];
+
+        if (!e->valid) {
+            continue;
+        }
+        if ((uint32_t)(now - e->tick) > CTRL_DEDUP_TTL_MS) {
+            e->valid = 0u;
+            continue;
+        }
+        if (e->src_mid == src_mid &&
+            e->target_mid == target_mid &&
+            e->cmd == cmd &&
+            e->msg_id == msg_id) {
+            *ack_out = e->ack;
+            return 1u;
+        }
+    }
+
+    return 0u;
+}
+
+static void light_ctrl_dedup_store(uint16_t src_mid, uint16_t target_mid,
+                                   uint8_t cmd, uint16_t msg_id,
+                                   const PowerCtrlAckBin_t *ack)
+{
+    light_ctrl_dedup_entry_t *e;
+
+    if (msg_id == 0u || ack == NULL) {
+        return;
+    }
+
+    e = &g_light_ctrl_dedup[g_light_ctrl_dedup_pos];
+    memset(e, 0, sizeof(*e));
+    e->valid = 1u;
+    e->src_mid = src_mid;
+    e->target_mid = target_mid;
+    e->cmd = cmd;
+    e->msg_id = msg_id;
+    e->tick = HAL_GetTick();
+    e->ack = *ack;
+    g_light_ctrl_dedup_pos =
+        (uint8_t)((g_light_ctrl_dedup_pos + 1u) % CTRL_DEDUP_CACHE_SIZE);
 }
 
 static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint16_t tmid, uint16_t target_mid, const uint8_t *data, uint16_t len)
@@ -961,19 +1117,29 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
             // LIGHT ON (0x10)            
             case LIGHT_ON:
             {
-                uint8_t on = flags & 0x01;
+                PowerCtrlAckBin_t ack = {0};
+
+                if (light_ctrl_dedup_find(tmid, target_mid, cmd, msg_id, &ack)) {
+                    uart6_log("[LIGHT_CTRL_DUP] src=0x%04X target=0x%04X cmd=0x%02X msg=%u resend_ack=1\r\n",
+                              (unsigned)tmid, (unsigned)target_mid,
+                              (unsigned)cmd, (unsigned)msg_id);
+                    schedule_resp_with_slot(RESP_KIND_LIGHT_ACK, tmid, msg_id,
+                                            (uint8_t *)&ack, sizeof(ack));
+                    break;
+                }
+
                 light_event_set_reason(LIGHT_EVENT_REASON_CMD);
-                start_manual_override(on);
+                start_manual_override(1u);
                 light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
                 g_last_light_control_tick = HAL_GetTick();
 
-                PowerCtrlAckBin_t ack = {0};
                 ack.t = LIGHT_ON_ACK;
                 memcpy(ack.uid, uid12, 12);
                 ack.msg_id = msg_id;
                 ack.ok = 1;
                 ack.err_code = 0;
                 ack.light_on = light_is_on_logical();
+                light_ctrl_dedup_store(tmid, target_mid, cmd, msg_id, &ack);
 
                 schedule_resp_with_slot(
                     RESP_KIND_LIGHT_ACK,
@@ -988,18 +1154,29 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
             // LIGHT OFF (0x11)
             case LIGHT_OFF:
             {
+                PowerCtrlAckBin_t ack = {0};
+
+                if (light_ctrl_dedup_find(tmid, target_mid, cmd, msg_id, &ack)) {
+                    uart6_log("[LIGHT_CTRL_DUP] src=0x%04X target=0x%04X cmd=0x%02X msg=%u resend_ack=1\r\n",
+                              (unsigned)tmid, (unsigned)target_mid,
+                              (unsigned)cmd, (unsigned)msg_id);
+                    schedule_resp_with_slot(RESP_KIND_LIGHT_ACK, tmid, msg_id,
+                                            (uint8_t *)&ack, sizeof(ack));
+                    break;
+                }
+
                 light_event_set_reason(LIGHT_EVENT_REASON_CMD);
                 start_manual_override(0);
                 light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
                 g_last_light_control_tick = HAL_GetTick();
 
-                PowerCtrlAckBin_t ack = {0};
                 ack.t = LIGHT_OFF_ACK;
                 memcpy(ack.uid, uid12, 12);
                 ack.msg_id = msg_id;
                 ack.ok = 1;
                 ack.err_code = 0;
                 ack.light_on = light_is_on_logical();
+                light_ctrl_dedup_store(tmid, target_mid, cmd, msg_id, &ack);
 
                 schedule_resp_with_slot(
                     RESP_KIND_LIGHT_ACK,
@@ -1207,7 +1384,7 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
             }
             case SET_SETTING:
             {
-                uint8_t duplicate = ctrl_dedup_check_and_mark(tmid, target_mid, cmd, msg_id);
+                uint8_t duplicate = ctrl_dedup_check_and_mark(tmid, target_mid, cmd, msg_id, data, len);
                 uint8_t result = duplicate ? 0u : handle_cmd_set_setting(data, len);
 
                 if (duplicate) {
@@ -1253,6 +1430,29 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 debug6("[ACK_SLOT] extended SET_SETTING ACK scheduled\r\n");
                 break;
             }
+#if SNAP_REPORT_ACK_ENABLE
+            case SNAP_RX_ACK_CMD:
+            {
+                uint8_t report_cmd = (len >= 1u) ? data[0] : SNAP_REPORT_CMD;
+                uint8_t ok = (len >= 2u) ? data[1] : 1u;
+
+                if (report_cmd != SNAP_REPORT_CMD &&
+                    report_cmd != LIGHT_STATE_EVENT_CMD) {
+                    uart6_log("[REPORT_ACK_DROP] reason=bad_report cmd=0x%02X msg=%u\r\n",
+                              (unsigned)report_cmd, (unsigned)msg_id);
+                    break;
+                }
+                report_ack_handle(report_cmd, msg_id, ok);
+                break;
+            }
+            case SNAP_REPORT_CMD:
+            case LIGHT_STATE_EVENT_CMD:
+                if ((flags & 0x80u) != 0u) {
+                    uint8_t ok = (len >= 1u) ? data[0] : 1u;
+                    report_ack_handle(cmd, msg_id, ok);
+                }
+                break;
+#endif
             case SET_ASTRO_SETTING:
             {
                 uart6_log("[SET_ASTRO_DEPRECATED] cmd=0x45 src=0x%04X target=0x%04X msg_id=%u ignored=1 use_cmd=0x31\r\n",
@@ -1371,6 +1571,8 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
 {
 
 	uint8_t result = 0;
+    uint8_t old_snap_enable = g_node_cfg.snap_enable;
+    uint16_t old_snap_interval_sec = g_node_cfg.snap_interval_sec;
 
     if (len < 13u) {        
     	return 1;
@@ -1393,6 +1595,8 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
     uint8_t light_on_min       = g_node_cfg.light_on_min;
     uint8_t light_off_hour     = g_node_cfg.light_off_hour;
     uint8_t light_off_min      = g_node_cfg.light_off_min;
+    uint16_t ai_interval_sec   = g_ai_settings.interval_sec;
+    uint8_t ai_setting_present = 0u;
 
     if (on_off_mode > 3u) {
         return 5u;
@@ -1438,6 +1642,15 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
         }
     }
 
+    if (len >= 32u) {
+        ai_interval_sec =
+            (uint16_t)data[30] | ((uint16_t)data[31] << 8);
+        if (ai_interval_sec == 0u) {
+            ai_interval_sec = AI_SETTINGS_DEFAULT_INTERVAL_SEC;
+        }
+        ai_setting_present = 1u;
+    }
+
     g_node_cfg.on_off_mode        = on_off_mode;
     g_node_cfg.on_corr_mode       = on_corr_mode;
     g_node_cfg.on_corr_time_min   = on_corr_time;
@@ -1470,20 +1683,37 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
     }
 
     snapshot_reconfigure_timer_from_cfg();
+    if (ai_setting_present) {
+        g_ai_settings.enabled = 1u;
+        g_ai_settings.interval_sec = ai_interval_sec;
+        ai_schedule_reconfigure();
+    }
 
     if (!save_node_cfg_to_flash(&g_node_cfg)) {
         result = 2u;
+    } else if (ai_setting_present && !ai_settings_save(&g_ai_settings)) {
+        result = 2u;
     } else {
         result = 0u;
+        if (g_node_cfg.snap_enable &&
+            (old_snap_enable != g_node_cfg.snap_enable ||
+             old_snap_interval_sec != g_node_cfg.snap_interval_sec)) {
+            sensor_capture_request_snapshot(0u);
+            uart6_log("[SNAP_CFG_APPLY_NOW] old=%u/%us new=%u/%us\r\n",
+                      (unsigned)old_snap_enable,
+                      (unsigned)old_snap_interval_sec,
+                      (unsigned)g_node_cfg.snap_enable,
+                      (unsigned)g_node_cfg.snap_interval_sec);
+        }
         if (len >= 30u && data[20] != 0u) {
             g_last_sun_year = 0u;
             update_sun_times();
             scheduler_poll();
         }
     }
-	char msg[160];
+	char msg[192];
 	    snprintf(msg, sizeof(msg),
-	             "[SET_SETTING] result=%d len=%u mode=%u on=%02u:%02u off=%02u:%02u save=%u %02u:%02u-%02u:%02u forced=%u snap=%u interval=%us\r\n",
+	             "[SET_SETTING] result=%d len=%u mode=%u on=%02u:%02u off=%02u:%02u save=%u %02u:%02u-%02u:%02u forced=%u snap=%u interval=%us ai_interval=%us ai_updated=%u\r\n",
 	             result,
 	             len,
 	             on_off_mode,
@@ -1498,7 +1728,9 @@ static uint8_t handle_cmd_set_setting(const uint8_t *data, uint16_t len)
 	             saving_end_min,
 	             forced_time,
 	             g_node_cfg.snap_enable,
-	             (unsigned)g_node_cfg.snap_interval_sec);
+	             (unsigned)g_node_cfg.snap_interval_sec,
+	             (unsigned)g_ai_settings.interval_sec,
+	             (unsigned)ai_setting_present);
 	    debug6(msg);
 	return result;
 }
@@ -1588,6 +1820,128 @@ static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len)
                (unsigned)(ok ? 1u : 0u)); */
     return ok;
 }
+
+static uint8_t report_tx_raw(uint8_t compact, uint8_t report_cmd,
+                             uint16_t msg_id, const uint8_t *body,
+                             uint16_t body_len)
+{
+    if (compact) {
+        return send_wisun_binary(0u, body, body_len) ? 1u : 0u;
+    }
+
+    return send_transport_direct(0u, 0u, report_cmd, 0u,
+                                 msg_id, body, body_len);
+}
+
+static uint8_t report_send_tracked(uint8_t compact, uint8_t report_cmd,
+                                   uint16_t msg_id, const uint8_t *body,
+                                   uint16_t body_len)
+{
+#if !SNAP_REPORT_ACK_ENABLE
+    return report_tx_raw(compact, report_cmd, msg_id, body, body_len);
+#else
+    int slot_idx = -1;
+
+    if (body == NULL || body_len == 0u ||
+        body_len > sizeof(g_report_ack_slots[0].body)) {
+        return 0u;
+    }
+    if (!report_tx_raw(compact, report_cmd, msg_id, body, body_len)) {
+        return 0u;
+    }
+
+    for (uint8_t i = 0u; i < REPORT_ACK_SLOT_COUNT; ++i) {
+        if (g_report_ack_slots[i].pending &&
+            g_report_ack_slots[i].report_cmd == report_cmd &&
+            g_report_ack_slots[i].msg_id == msg_id) {
+            slot_idx = (int)i;
+            break;
+        }
+        if (!g_report_ack_slots[i].pending && slot_idx < 0) {
+            slot_idx = (int)i;
+        }
+    }
+
+    if (slot_idx < 0) {
+        uart6_log("[REPORT_ACK_UNTRACKED] cmd=0x%02X msg=%u reason=qfull\r\n",
+                  (unsigned)report_cmd, (unsigned)msg_id);
+        return 1u;
+    }
+
+    report_ack_slot_t *slot = &g_report_ack_slots[slot_idx];
+    memset(slot, 0, sizeof(*slot));
+    slot->pending = 1u;
+    slot->compact = compact ? 1u : 0u;
+    slot->report_cmd = report_cmd;
+    slot->attempts = 1u;
+    slot->msg_id = msg_id;
+    slot->body_len = body_len;
+    slot->last_tx_tick = HAL_GetTick();
+    memcpy(slot->body, body, body_len);
+
+    uart6_log("[REPORT_ACK_WAIT] cmd=0x%02X msg=%u attempt=1/%u\r\n",
+              (unsigned)report_cmd, (unsigned)msg_id,
+              (unsigned)REPORT_ACK_MAX_ATTEMPTS);
+    return 1u;
+#endif
+}
+
+#if SNAP_REPORT_ACK_ENABLE
+static void report_ack_handle(uint8_t report_cmd, uint16_t msg_id, uint8_t ok)
+{
+    for (uint8_t i = 0u; i < REPORT_ACK_SLOT_COUNT; ++i) {
+        report_ack_slot_t *slot = &g_report_ack_slots[i];
+
+        if (!slot->pending || slot->report_cmd != report_cmd ||
+            slot->msg_id != msg_id) {
+            continue;
+        }
+
+        if (ok) {
+            uart6_log("[REPORT_ACK_OK] cmd=0x%02X msg=%u attempts=%u\r\n",
+                      (unsigned)report_cmd, (unsigned)msg_id,
+                      (unsigned)slot->attempts);
+            memset(slot, 0, sizeof(*slot));
+        } else {
+            slot->last_tx_tick = HAL_GetTick() - REPORT_ACK_TIMEOUT_MS;
+            uart6_log("[REPORT_ACK_NACK] cmd=0x%02X msg=%u\r\n",
+                      (unsigned)report_cmd, (unsigned)msg_id);
+        }
+        return;
+    }
+
+    uart6_log("[REPORT_ACK_STALE] cmd=0x%02X msg=%u ok=%u\r\n",
+              (unsigned)report_cmd, (unsigned)msg_id, (unsigned)ok);
+}
+
+static void report_ack_poll(uint32_t now)
+{
+    for (uint8_t i = 0u; i < REPORT_ACK_SLOT_COUNT; ++i) {
+        report_ack_slot_t *slot = &g_report_ack_slots[i];
+
+        if (!slot->pending ||
+            (uint32_t)(now - slot->last_tx_tick) < REPORT_ACK_TIMEOUT_MS) {
+            continue;
+        }
+        if (slot->attempts >= REPORT_ACK_MAX_ATTEMPTS) {
+            uart6_log("[REPORT_ACK_TIMEOUT] cmd=0x%02X msg=%u attempts=%u\r\n",
+                      (unsigned)slot->report_cmd, (unsigned)slot->msg_id,
+                      (unsigned)slot->attempts);
+            memset(slot, 0, sizeof(*slot));
+            continue;
+        }
+
+        slot->attempts++;
+        slot->last_tx_tick = now;
+        (void)report_tx_raw(slot->compact, slot->report_cmd, slot->msg_id,
+                            slot->body, slot->body_len);
+        uart6_log("[REPORT_ACK_RETRY] cmd=0x%02X msg=%u attempt=%u/%u\r\n",
+                  (unsigned)slot->report_cmd, (unsigned)slot->msg_id,
+                  (unsigned)slot->attempts,
+                  (unsigned)REPORT_ACK_MAX_ATTEMPTS);
+    }
+}
+#endif
 
 void dbg_print_mid_info(const char *tag, uint16_t my_mid, uint16_t target_mid)
 {
@@ -2006,7 +2360,8 @@ void wisun_process_rx_mainloop(void)
     
     if (target_mid == 0x0000 || target_mid == my_mid) {
 
-        if (is_uplink_report_cmd(cmd)) {
+        if (is_uplink_report_cmd(cmd) &&
+            (!SNAP_REPORT_ACK_ENABLE || (flags & 0x80u) == 0u)) {
             timing_log("[DROP_UPLINK_REPORT_ON_NODE] src=0x%04X target=0x%04X ttl=%u cmd=0x%02X msg=%u len=%u\r\n",
                     (unsigned)src_mid,
                     (unsigned)target_mid,
@@ -2124,16 +2479,174 @@ void snapshot_suppress_next_tx(void)
     __enable_irq();
 }
 
+static void sensor_capture_request(uint8_t requests, uint16_t req_msg_id)
+{
+    __disable_irq();
+    g_sensor_capture_pending |= requests;
+    if ((requests & SENSOR_CAPTURE_SNAPSHOT) != 0u && req_msg_id != 0u) {
+        g_sensor_snapshot_req_msg_id = req_msg_id;
+    }
+    __enable_irq();
+}
+
+void sensor_capture_request_snapshot(uint16_t req_msg_id)
+{
+    sensor_capture_request(SENSOR_CAPTURE_SNAPSHOT, req_msg_id);
+}
+
+static void ai_schedule_reconfigure(void)
+{
+    if (g_ai_settings.interval_sec == 0u) {
+        g_ai_settings.interval_sec = AI_SETTINGS_DEFAULT_INTERVAL_SEC;
+    }
+    g_ai_settings.enabled = g_ai_settings.enabled ? 1u : 0u;
+    g_ai_last_request_tick = HAL_GetTick();
+    g_ai_last_rtc_slot = UINT32_MAX;
+
+    uart6_log("[AI_CFG] enable=%u interval_sec=%u\r\n",
+              (unsigned)g_ai_settings.enabled,
+              (unsigned)g_ai_settings.interval_sec);
+}
+
+static void ai_schedule_poll(uint32_t now)
+{
+    uint32_t interval_ms;
+    uint32_t interval_sec;
+
+    if (!g_ai_settings.enabled) {
+        return;
+    }
+
+    interval_sec = (uint32_t)g_ai_settings.interval_sec;
+    interval_ms = interval_sec * 1000u;
+
+    if (g_rtc_synced) {
+        RTC_TimeTypeDef time = {0};
+        RTC_DateTypeDef date = {0};
+
+        if (HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BIN) == HAL_OK &&
+            HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN) == HAL_OK &&
+            time.Hours <= 23u && time.Minutes <= 59u &&
+            time.Seconds <= 59u) {
+            uint32_t sec_of_day =
+                ((uint32_t)time.Hours * 3600u) +
+                ((uint32_t)time.Minutes * 60u) +
+                (uint32_t)time.Seconds;
+            uint32_t day_key =
+                ((uint32_t)date.Year * 372u) +
+                ((uint32_t)date.Month * 31u) +
+                (uint32_t)date.Date;
+            uint32_t rtc_slot =
+                (day_key * 86400u + sec_of_day) / interval_sec;
+
+            if (g_ai_last_rtc_slot == UINT32_MAX) {
+                g_ai_last_rtc_slot = rtc_slot;
+                g_ai_last_request_tick = now;
+                return;
+            }
+            if (rtc_slot == g_ai_last_rtc_slot) {
+                return;
+            }
+
+            g_ai_last_rtc_slot = rtc_slot;
+            g_ai_last_request_tick = now;
+            sensor_capture_request(SENSOR_CAPTURE_AI, 0u);
+            uart6_log("[AI_REQUEST] interval_sec=%u rtc_slot=%lu tick=%lu\r\n",
+                      (unsigned)g_ai_settings.interval_sec,
+                      (unsigned long)rtc_slot,
+                      (unsigned long)now);
+            return;
+        }
+    }
+
+    if ((uint32_t)(now - g_ai_last_request_tick) < interval_ms) {
+        return;
+    }
+
+    g_ai_last_request_tick = now;
+    sensor_capture_request(SENSOR_CAPTURE_AI, 0u);
+    uart6_log("[AI_REQUEST] interval_sec=%u tick=%lu\r\n",
+              (unsigned)g_ai_settings.interval_sec,
+              (unsigned long)now);
+}
+
+static void sensor_pipeline_poll(uint32_t now)
+{
+    (void)now;
+
+    if (g_sensor_pipeline_state == SENSOR_PIPELINE_IDLE) {
+        uint8_t requests;
+
+        __disable_irq();
+        requests = g_sensor_capture_pending;
+        g_sensor_capture_pending = 0u;
+        __enable_irq();
+
+        if (requests == 0u) {
+            return;
+        }
+
+        g_sensor_capture_active = requests;
+        g_sensor_pipeline_state = SENSOR_PIPELINE_CAPTURING;
+        Ultra_StartDmaFrame();
+
+        if (ultra_sampling_paused) {
+            __disable_irq();
+            g_sensor_capture_pending |= g_sensor_capture_active;
+            __enable_irq();
+            g_sensor_capture_active = 0u;
+            g_sensor_pipeline_state = SENSOR_PIPELINE_IDLE;
+        }
+        return;
+    }
+
+    if (g_sensor_pipeline_state == SENSOR_PIPELINE_CAPTURING &&
+        ultra_frame_ready) {
+        uint16_t req_msg_id;
+
+        __disable_irq();
+        g_sensor_capture_active |= g_sensor_capture_pending;
+        g_sensor_capture_pending = 0u;
+        __enable_irq();
+
+        req_msg_id =
+            ((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) != 0u)
+                ? g_sensor_snapshot_req_msg_id
+                : 0u;
+
+        g_sensor_pipeline_state = SENSOR_PIPELINE_PROCESSING;
+        Send_Monitoring_Snapshot_JSON(req_msg_id);
+        g_sensor_snapshot_req_msg_id = 0u;
+        g_sensor_capture_active = 0u;
+        g_sensor_pipeline_state = SENSOR_PIPELINE_IDLE;
+    }
+}
+
 void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 {
-    uint8_t suppress_tx = 0u;
+    uint8_t suppress_tx;
+    uint8_t run_ai;
+
+    if (g_sensor_pipeline_state != SENSOR_PIPELINE_PROCESSING) {
+        uint8_t request = g_snapshot_suppress_next_tx
+            ? SENSOR_CAPTURE_MEASURE_ONLY
+            : SENSOR_CAPTURE_SNAPSHOT;
+
+        sensor_capture_request(request, req_msg_id);
+        return;
+    }
+
+    suppress_tx =
+        ((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) == 0u) ? 1u : 0u;
+    run_ai =
+        ((g_sensor_capture_active & SENSOR_CAPTURE_AI) != 0u) ? 1u : 0u;
 
     __disable_irq();
-    suppress_tx = g_snapshot_suppress_next_tx;
     g_snapshot_suppress_next_tx = 0u;
     __enable_irq();
 
-    if (req_msg_id == 0u && !node_is_provisioned()) {
+    if ((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) != 0u &&
+        req_msg_id == 0u && !node_is_provisioned()) {
         uart6_log(
             "[SNAP_SKIP] reason=not_provisioned req_msg_id=%u my_mid=%u\r\n",
             (unsigned)req_msg_id,
@@ -2151,8 +2664,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         );
 
         if (ultra_sampling_paused) {
-            Ultra_StartDmaFrame();
-            ultra_sampling_paused = 0;
+            __disable_irq();
+            g_sensor_capture_pending |= g_sensor_capture_active;
+            __enable_irq();
         }
         return;
     }
@@ -2405,12 +2919,21 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     );
 
     /* ===== AI 추론 ===== */
-    uint8_t snap_ai_valid = 0u;
+    uint8_t snap_ai_valid = g_ai_result_valid;
     float snap_ai_mse = 0.0f;
-    uint32_t snap_ai_mse_x1000000 = 0u;
-    int snap_ai_pred = 0;
+    uint32_t snap_ai_mse_x1000000 = g_ai_result_mse_x1000000;
+    int snap_ai_pred = (int)g_ai_result_pred;
 
-    if (fft_cnt > 0u) {
+    if (run_ai) {
+        g_ai_result_valid = 0u;
+        g_ai_result_mse_x1000000 = 0u;
+        g_ai_result_pred = 0;
+        snap_ai_valid = 0u;
+        snap_ai_mse_x1000000 = 0u;
+        snap_ai_pred = 0;
+    }
+
+    if (run_ai && fft_cnt > 0u) {
         float ai_features[AE_COLS] = {0};
 
         ai_features[AI_FEATURE_FREQ_KHZ_IDX] =
@@ -2430,6 +2953,10 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
             snap_ai_valid = 1u;
             snap_ai_mse_x1000000 =
                 scale_ai_mse_x1000000(snap_ai_mse);
+
+            g_ai_result_valid = snap_ai_valid;
+            g_ai_result_mse_x1000000 = snap_ai_mse_x1000000;
+            g_ai_result_pred = (int8_t)snap_ai_pred;
 
             ai_mse = snap_ai_mse;
             ai_pred = snap_ai_pred;
@@ -2464,7 +2991,6 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
             (unsigned)my_mid
         );
 
-        Ultra_StartDmaFrame();
         g_last_has_msg_id = 0u;
         g_last_has_cmd = 0u;
         return;
@@ -2563,7 +3089,6 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
                 (unsigned)my_mid
             );
 
-            Ultra_StartDmaFrame();
             g_last_has_msg_id = 0u;
             g_last_has_cmd = 0u;
             return;
@@ -2584,11 +3109,13 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         );
 
         {
-            bool snap_sent = send_wisun_binary(
-                snap_tmid,
+            bool snap_sent = report_send_tracked(
+                1u,
+                SNAP_REPORT_CMD,
+                tx_msg_id,
                 snap_body,
                 snap_body_len
-            );
+            ) ? true : false;
 
             if (snap_sent) {
                 snapshot_mark_tx(
@@ -2609,7 +3136,6 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
             (unsigned)snap_tmid
         );
 
-        Ultra_StartDmaFrame();
         g_last_has_msg_id = 0u;
         g_last_has_cmd = 0u;
         return;
@@ -2780,7 +3306,6 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
                 (unsigned)my_mid
             );
 
-            Ultra_StartDmaFrame();
             g_last_has_msg_id = 0u;
             g_last_has_cmd = 0u;
             return;
@@ -2847,11 +3372,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         );
 
         if (!snap_enqueued) {
-            if (send_transport_direct(
-                    0x0000u,
+            if (report_send_tracked(
                     0u,
                     SNAP_REPORT_CMD,
-                    0u,
                     tx_msg_id,
                     snap_body,
                     snap_body_len
@@ -2865,8 +3388,6 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
                 (req_msg_id != 0u) ? 1u : 0u
             );
         }
-
-        Ultra_StartDmaFrame();
 
         g_last_has_msg_id = 0u;
         g_last_has_cmd = 0u;
@@ -3052,7 +3573,6 @@ int main(void)
      Error_Handler();
    }
   //HAL_ADC_Start_IT(&hadc2);
-  Ultra_StartDmaFrame();
   SCB->SHCSR &= ~(SCB_SHCSR_MEMFAULTENA_Msk);
         __DSB();
         __ISB();
@@ -3087,6 +3607,11 @@ int main(void)
            node_cfg_init_default(&g_node_cfg);
            (void)save_node_cfg_to_flash(&g_node_cfg);
        }
+
+    if (!ai_settings_load(&g_ai_settings)) {
+        ai_settings_init_default(&g_ai_settings);
+        (void)ai_settings_save(&g_ai_settings);
+    }
 
     if (g_node_cfg.mode > 3u) {
         g_node_cfg.mode = (g_node_cfg.on_off_mode <= 3u) ? g_node_cfg.on_off_mode : 1u;
@@ -3138,6 +3663,7 @@ int main(void)
 
     apply_mid_chan_from_cfg();
     snapshot_reconfigure_timer_from_cfg();
+    ai_schedule_reconfigure();
     light_event_init();
     g_light_on = light_is_on_logical();
     printf("[MIDCH_BOOT] mid=0x%04X ch=%u,%u assigned=%u (src=%s)\r\n",
@@ -3246,10 +3772,15 @@ int main(void)
 	         wisun_app_poll(now);
 	         rtc_scheduler_poll(now);
 	         wisun_idle_reset_poll(HAL_GetTick());
+#if SNAP_REPORT_ACK_ENABLE
+	         report_ack_poll(now);
+#endif
 	         snapshot_poll(now,
 	                       ultra_frame_ready ? 1u : 0u,
 	                       ultra_sampling_paused ? 1u : 0u,
 	                       g_last_light_control_tick);
+	         ai_schedule_poll(now);
+	         sensor_pipeline_poll(now);
 
 	          //===================== RTC / SUN =====================
 	         if ((uint32_t)(now - rtc_dbg_tick) >= 180000u) {
