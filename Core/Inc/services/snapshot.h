@@ -84,10 +84,14 @@ extern "C" {
  *   40      : control mode
  *   41..42  : effective ON time, minute-of-day, little endian
  *   43..44  : effective OFF time, minute-of-day, little endian
+ *
+ * Compact SNAP V3 adds:
+ *   45..46  : RUL percent x100, little endian (0..10000)
  */
 #define SNAP_COMPACT_BODY_LEN_V1       40u
 #define SNAP_COMPACT_BODY_LEN_V2       45u
-#define SNAP_COMPACT_BODY_LEN          SNAP_COMPACT_BODY_LEN_V2
+#define SNAP_COMPACT_BODY_LEN_V3       47u
+#define SNAP_COMPACT_BODY_LEN          SNAP_COMPACT_BODY_LEN_V3
 
 #define SNAP_COMPACT_TTL_IDX            1u
 #define SNAP_COMPACT_UID_IDX            2u
@@ -97,6 +101,7 @@ extern "C" {
 #define SNAP_COMPACT_MODE_IDX          40u
 #define SNAP_COMPACT_ON_TIME_IDX       41u
 #define SNAP_COMPACT_OFF_TIME_IDX      43u
+#define SNAP_COMPACT_RUL_PERCENT_IDX   45u
 
 #define SNAP_CONTROL_TIME_INVALID 0xFFFFu
 #define SNAP_COMPACT_TYPE_IDX           0u
@@ -197,7 +202,8 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
                                  uint8_t ttl,
                                  uint8_t control_mode,
                                  uint16_t on_time_min,
-                                 uint16_t off_time_min);
+                                 uint16_t off_time_min,
+                                 uint16_t rul_percent_x100);
 
 bool is_compact_snap_body(const uint8_t *data, uint16_t len);
 uint16_t compact_snap_count16(const uint8_t *data);

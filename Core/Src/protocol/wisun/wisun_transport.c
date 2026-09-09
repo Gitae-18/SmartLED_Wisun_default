@@ -10,6 +10,8 @@ extern UART_HandleTypeDef huart6;
 
 #define WISUN_UART_TX_TIMEOUT_MS 100u
 
+static volatile wisun_tx_status_t g_wisun_tx_last_status = WISUN_TX_STATUS_OK;
+
 void dbg_dump_uart6(const uint8_t *p, uint16_t n) {
     if (!p || !n) return;
 
@@ -32,8 +34,31 @@ void dbg_dump_uart6(const uint8_t *p, uint16_t n) {
 }
 
 bool wisun_transport_send_blocking(const uint8_t *data, uint16_t len) {
-    if (!data || !len) return false;
-    return HAL_UART_Transmit(&huart1, (uint8_t*)data, len, WISUN_UART_TX_TIMEOUT_MS) == HAL_OK;
+    HAL_StatusTypeDef hal_status;
+
+    if (!data || !len) {
+        g_wisun_tx_last_status = WISUN_TX_STATUS_INVALID;
+        return false;
+    }
+
+    hal_status = HAL_UART_Transmit(&huart1, (uint8_t*)data, len, WISUN_UART_TX_TIMEOUT_MS);
+    switch (hal_status) {
+    case HAL_OK:
+        g_wisun_tx_last_status = WISUN_TX_STATUS_OK;
+        return true;
+    case HAL_BUSY:
+        g_wisun_tx_last_status = WISUN_TX_STATUS_BUSY;
+        break;
+    case HAL_TIMEOUT:
+        g_wisun_tx_last_status = WISUN_TX_STATUS_TIMEOUT;
+        break;
+    case HAL_ERROR:
+    default:
+        g_wisun_tx_last_status = WISUN_TX_STATUS_ERROR;
+        break;
+    }
+
+    return false;
 }
 
 bool wisun_tx_adapter(const uint8_t *data, uint16_t len, void *user) {
@@ -41,4 +66,12 @@ bool wisun_tx_adapter(const uint8_t *data, uint16_t len, void *user) {
     if (!data || !len) return false;
     
     return wisun_transport_send_blocking(data, len);
+}
+
+wisun_tx_status_t wisun_transport_get_last_status(void) {
+    return g_wisun_tx_last_status;
+}
+
+void wisun_transport_abort_tx(void) {
+    (void)HAL_UART_AbortTransmit(&huart1);
 }

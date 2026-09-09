@@ -42,9 +42,9 @@
 #include "services/storage_cfg.h"
 #include "services/solar_calc.h"
 #include "app_x-cube-ai.h"
-#include "signal/quant.h"
+#include "signal/ai_config.h"
 #include <stdarg.h>
-#include "APP/network.h"
+#include "network.h"
 #include <assert.h>
 #include "platform/adc_user.h"
 #include "services/light_control.h"
@@ -56,6 +56,8 @@
 #include "protocol/wisun/wisun_router.h"
 #include "services/light_event.h"
 #include "services/ai_settings.h"
+#include "signal/ai_runtime.h"
+#include "signal/rul.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,7 +107,9 @@ typedef struct {
     
     uint8_t      buf[128];     
     uint16_t     len;
-    uint8_t      has_raw_buf;  
+    uint8_t      has_raw_buf;
+    uint8_t      tx_attempts;
+    uint8_t      tx_copy;
 } resp_slot_t;
 
 typedef struct __attribute__((packed)) {
@@ -220,12 +224,11 @@ typedef struct {
 #define FFT_DELAY_MS     100
 
 #define AE_ROWS 10
-#define AE_COLS 4
 
 #define AI_FEATURE_FREQ_KHZ_IDX 0
 #define AI_FEATURE_ADC_PK_IDX   1
-#define AI_FEATURE_CURRENT_IDX  2
-#define AI_FEATURE_VIN_IDX      3
+#define AI_FEATURE_VIN_IDX      2
+#define AI_FEATURE_CURRENT_IDX  3
 
 #define TRIGGER_THRESHOLD  0.1f
 #define TRIGGER_TIMEOUT 1000
@@ -323,7 +326,7 @@ typedef struct {
 #define T_GET_CH_RESP 0x24
 #define CMD_ACK_RELAY 0x7E
 #ifndef SNAP_REPORT_ACK_ENABLE
-#define SNAP_REPORT_ACK_ENABLE 0
+#define SNAP_REPORT_ACK_ENABLE 1
 #endif
 
 #if SNAP_REPORT_ACK_ENABLE
@@ -334,7 +337,8 @@ typedef struct {
  */
 #define SNAP_RX_ACK_CMD 0x16u
 #define REPORT_ACK_SLOT_COUNT 4u
-#define REPORT_ACK_TIMEOUT_MS 5000u
+#define SNAP_REPORT_ACK_TIMEOUT_MS 5000u
+#define LIGHT_EVENT_ACK_TIMEOUT_MS 1000u
 #define REPORT_ACK_MAX_ATTEMPTS 3u
 #endif
 
@@ -343,7 +347,11 @@ typedef struct {
 #define CTRL_DEDUP_CACHE_SIZE       8u
 #define CTRL_DEDUP_TTL_MS           120000u
 
-#define RESP_QUEUE_SIZE 4
+#define RESP_QUEUE_SIZE 8
+#define LIGHT_ACK_TX_MAX_ATTEMPTS 3u
+#define LIGHT_ACK_TX_BUSY_RETRY_MS 10u
+#define LIGHT_ACK_TX_FAIL_RETRY_MS 20u
+#define LIGHT_ACK_BURST_COUNT 3u
 
 #ifndef MID_INVALID
 #define MID_INVALID ((uint16_t)0xFFFF)
@@ -644,6 +652,8 @@ static void sensor_pipeline_poll(uint32_t now);
 static void ai_schedule_reconfigure(void);
 static void ai_schedule_poll(uint32_t now);
 static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t msg_id, const uint8_t *raw, uint16_t raw_len);
+static void schedule_light_ack_burst(uint16_t tmid, uint16_t msg_id, const uint8_t *raw, uint16_t raw_len);
+static uint8_t schedule_light_ack_retry(const resp_slot_t *failed_slot, uint32_t delay_ms);
 //static bool send_wisun_resp(uint16_t tmid, const uint8_t *cbor, size_t cbor_len);
 static bool send_wisun_binary(uint16_t tmid, const uint8_t *data, size_t len);
 static uint8_t report_send_tracked(uint8_t compact, uint8_t report_cmd, uint16_t msg_id, const uint8_t *body, uint16_t body_len);
@@ -1123,8 +1133,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                     uart6_log("[LIGHT_CTRL_DUP] src=0x%04X target=0x%04X cmd=0x%02X msg=%u resend_ack=1\r\n",
                               (unsigned)tmid, (unsigned)target_mid,
                               (unsigned)cmd, (unsigned)msg_id);
-                    schedule_resp_with_slot(RESP_KIND_LIGHT_ACK, tmid, msg_id,
-                                            (uint8_t *)&ack, sizeof(ack));
+                    schedule_light_ack_burst(tmid, msg_id,
+                                             (uint8_t *)&ack, sizeof(ack));
                     break;
                 }
 
@@ -1141,13 +1151,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 ack.light_on = light_is_on_logical();
                 light_ctrl_dedup_store(tmid, target_mid, cmd, msg_id, &ack);
 
-                schedule_resp_with_slot(
-                    RESP_KIND_LIGHT_ACK,
-                    tmid,
-                    msg_id,
-                    (uint8_t*)&ack,
-                    sizeof(ack)
-                );
+                schedule_light_ack_burst(tmid, msg_id,
+                                         (uint8_t *)&ack, sizeof(ack));
                 break;
             }
             
@@ -1160,8 +1165,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                     uart6_log("[LIGHT_CTRL_DUP] src=0x%04X target=0x%04X cmd=0x%02X msg=%u resend_ack=1\r\n",
                               (unsigned)tmid, (unsigned)target_mid,
                               (unsigned)cmd, (unsigned)msg_id);
-                    schedule_resp_with_slot(RESP_KIND_LIGHT_ACK, tmid, msg_id,
-                                            (uint8_t *)&ack, sizeof(ack));
+                    schedule_light_ack_burst(tmid, msg_id,
+                                             (uint8_t *)&ack, sizeof(ack));
                     break;
                 }
 
@@ -1178,13 +1183,8 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                 ack.light_on = light_is_on_logical();
                 light_ctrl_dedup_store(tmid, target_mid, cmd, msg_id, &ack);
 
-                schedule_resp_with_slot(
-                    RESP_KIND_LIGHT_ACK,
-                    tmid,
-                    msg_id,
-                    (uint8_t*)&ack,
-                    sizeof(ack)
-                );
+                schedule_light_ack_burst(tmid, msg_id,
+                                         (uint8_t *)&ack, sizeof(ack));
                 break;
             }
             
@@ -1887,6 +1887,13 @@ static uint8_t report_send_tracked(uint8_t compact, uint8_t report_cmd,
 }
 
 #if SNAP_REPORT_ACK_ENABLE
+static uint32_t report_ack_timeout_ms(uint8_t report_cmd)
+{
+    return (report_cmd == LIGHT_STATE_EVENT_CMD)
+        ? LIGHT_EVENT_ACK_TIMEOUT_MS
+        : SNAP_REPORT_ACK_TIMEOUT_MS;
+}
+
 static void report_ack_handle(uint8_t report_cmd, uint16_t msg_id, uint8_t ok)
 {
     for (uint8_t i = 0u; i < REPORT_ACK_SLOT_COUNT; ++i) {
@@ -1903,7 +1910,7 @@ static void report_ack_handle(uint8_t report_cmd, uint16_t msg_id, uint8_t ok)
                       (unsigned)slot->attempts);
             memset(slot, 0, sizeof(*slot));
         } else {
-            slot->last_tx_tick = HAL_GetTick() - REPORT_ACK_TIMEOUT_MS;
+            slot->last_tx_tick = HAL_GetTick() - report_ack_timeout_ms(report_cmd);
             uart6_log("[REPORT_ACK_NACK] cmd=0x%02X msg=%u\r\n",
                       (unsigned)report_cmd, (unsigned)msg_id);
         }
@@ -1918,9 +1925,15 @@ static void report_ack_poll(uint32_t now)
 {
     for (uint8_t i = 0u; i < REPORT_ACK_SLOT_COUNT; ++i) {
         report_ack_slot_t *slot = &g_report_ack_slots[i];
+        uint32_t timeout_ms;
 
-        if (!slot->pending ||
-            (uint32_t)(now - slot->last_tx_tick) < REPORT_ACK_TIMEOUT_MS) {
+        if (!slot->pending) {
+            continue;
+        }
+
+        timeout_ms = report_ack_timeout_ms(slot->report_cmd);
+
+        if ((uint32_t)(now - slot->last_tx_tick) < timeout_ms) {
             continue;
         }
         if (slot->attempts >= REPORT_ACK_MAX_ATTEMPTS) {
@@ -1935,10 +1948,11 @@ static void report_ack_poll(uint32_t now)
         slot->last_tx_tick = now;
         (void)report_tx_raw(slot->compact, slot->report_cmd, slot->msg_id,
                             slot->body, slot->body_len);
-        uart6_log("[REPORT_ACK_RETRY] cmd=0x%02X msg=%u attempt=%u/%u\r\n",
+        uart6_log("[REPORT_ACK_RETRY] cmd=0x%02X msg=%u attempt=%u/%u timeout=%lu\r\n",
                   (unsigned)slot->report_cmd, (unsigned)slot->msg_id,
                   (unsigned)slot->attempts,
-                  (unsigned)REPORT_ACK_MAX_ATTEMPTS);
+                  (unsigned)REPORT_ACK_MAX_ATTEMPTS,
+                  (unsigned long)timeout_ms);
     }
 }
 #endif
@@ -2935,21 +2949,34 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
 
     if (run_ai && fft_cnt > 0u) {
         float ai_features[AE_COLS] = {0};
+        /* Match ON_TEST_v1: Hann/3-bin RSS magnitude -> ADC peak counts.
+         * Keep fft_amp[] in its existing units for Wi-SUN snapshots. */
+        const float ai_vpk =
+            (2.0f / ((float)FFT_SIZE * 0.5f)) * fft_amp[0];
 
         ai_features[AI_FEATURE_FREQ_KHZ_IDX] =
             fft_freq[0] * 0.001f;
         ai_features[AI_FEATURE_ADC_PK_IDX] =
-            fft_amp[0];
+            ai_vpk * (4095.0f / 3.3f);
         ai_features[AI_FEATURE_CURRENT_IDX] =
             i_adc_v;
         ai_features[AI_FEATURE_VIN_IDX] =
             vin_v;
 
-        if (run_inference(
-                ai_features,
-                &snap_ai_mse,
-                &snap_ai_pred
-            ) == 0) {
+        AI_RuntimeInput runtime_input = {
+            .model_input = {ai_features[0], ai_features[1],
+                            ai_features[2], ai_features[3]},
+            .measured_freq_khz = ai_features[AI_FEATURE_FREQ_KHZ_IDX],
+            .measured_adc_pk = ai_features[AI_FEATURE_ADC_PK_IDX],
+            .measured_voltage_v = vin_v,
+            .measured_current_a = i_adc_v,
+            .temperature_c = temp_c,
+            .temperature_valid = temp_ok
+        };
+        AI_Result runtime_result = AI_Runtime_Process(&runtime_input);
+        if (runtime_result.status == 0) {
+            snap_ai_mse = runtime_result.mse;
+            snap_ai_pred = runtime_result.is_anomaly;
             snap_ai_valid = 1u;
             snap_ai_mse_x1000000 =
                 scale_ai_mse_x1000000(snap_ai_mse);
@@ -3054,7 +3081,26 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
             &control_off_min
         );
 
-        snap_body_len = encode_snap_compact_bin( snap_body, (uint16_t)sizeof(snap_body), uid12, vin_v, i_adc_v, temp_c, light_on ? 1u : 0u, local_fft_cnt > 0u ? 1u : 0u, local_fft0_freq, local_fft0_amp, local_monitor_count, snap_ai_valid, snap_ai_mse_x1000000, (int8_t)snap_ai_pred, 1u, SNAP_COMPACT_TTL_DEFAULT, control_mode, control_on_min, control_off_min );
+        float rul_percent = RUL_GetPercent();
+        if (!isfinite(rul_percent)) {
+            rul_percent = 0.0f;
+        }
+        if (rul_percent < 0.0f) {
+            rul_percent = 0.0f;
+        }
+        if (rul_percent > 100.0f) {
+            rul_percent = 100.0f;
+        }
+        uint16_t rul_percent_x100 =
+            (uint16_t)(rul_percent * 100.0f + 0.5f);
+
+        snap_body_len = encode_snap_compact_bin( snap_body, (uint16_t)sizeof(snap_body), uid12, vin_v, i_adc_v, temp_c, light_on ? 1u : 0u, local_fft_cnt > 0u ? 1u : 0u, local_fft0_freq, local_fft0_amp, local_monitor_count, snap_ai_valid, snap_ai_mse_x1000000, (int8_t)snap_ai_pred, 1u, SNAP_COMPACT_TTL_DEFAULT, control_mode, control_on_min, control_off_min, rul_percent_x100 );
+
+        uart6_log(
+            "[SNAP_RUL] percent=%.2f scaled=%u\r\n",
+            (double)rul_percent,
+            (unsigned)rul_percent_x100
+        );
 
         if (control_on_min == 0xFFFFu ||
             control_off_min == 0xFFFFu) {
@@ -3509,6 +3555,111 @@ static void schedule_resp_with_slot(resp_kind_t kind, uint16_t tmid, uint16_t ms
     }
 }
 
+static void schedule_light_ack_burst(uint16_t tmid, uint16_t msg_id,
+                                     const uint8_t *raw, uint16_t raw_len)
+{
+    static const uint32_t delays_ms[LIGHT_ACK_BURST_COUNT] = { 0u, 100u, 300u };
+    uint32_t now = HAL_GetTick();
+
+    if (raw == NULL || raw_len == 0u || raw_len > sizeof(g_resp_q[0].buf)) {
+        uart6_log("[LIGHT_ACK_BURST_DROP] msg=%u reason=bad_payload len=%u\r\n",
+                  (unsigned)msg_id, (unsigned)raw_len);
+        return;
+    }
+
+    for (uint8_t copy = 0u; copy < LIGHT_ACK_BURST_COUNT; ++copy) {
+        int free_idx = -1;
+        int snap_idx = -1;
+        uint8_t replacing_snap = 0u;
+
+        __disable_irq();
+        for (int i = 0; i < RESP_QUEUE_SIZE; ++i) {
+            if (!g_resp_q[i].pending) {
+                free_idx = i;
+                break;
+            }
+            if (g_resp_q[i].kind == RESP_KIND_SNAP && snap_idx < 0) {
+                snap_idx = i;
+            }
+        }
+
+        if (free_idx < 0 && snap_idx >= 0) {
+            free_idx = snap_idx;
+            replacing_snap = 1u;
+        }
+
+        if (free_idx >= 0) {
+            resp_slot_t *slot = &g_resp_q[free_idx];
+
+            memset(slot, 0, sizeof(*slot));
+            slot->pending = 1u;
+            slot->kind = RESP_KIND_LIGHT_ACK;
+            slot->tmid = tmid;
+            slot->msg_id = msg_id;
+            slot->due_tick = now + delays_ms[copy];
+            slot->len = raw_len;
+            slot->has_raw_buf = 1u;
+            slot->tx_attempts = 0u;
+            slot->tx_copy = (uint8_t)(copy + 1u);
+            memcpy(slot->buf, raw, raw_len);
+        }
+        __enable_irq();
+
+        if (free_idx < 0) {
+            uart6_log("[LIGHT_ACK_BURST_DROP] msg=%u copy=%u/%u reason=qfull\r\n",
+                      (unsigned)msg_id,
+                      (unsigned)(copy + 1u),
+                      (unsigned)LIGHT_ACK_BURST_COUNT);
+        } else {
+            uart6_log(replacing_snap ?
+                      "[LIGHT_ACK_BURST_REPLACE] q=%d msg=%u copy=%u/%u delay=%lu\r\n" :
+                      "[LIGHT_ACK_BURST_ENQ] q=%d msg=%u copy=%u/%u delay=%lu\r\n",
+                      free_idx,
+                      (unsigned)msg_id,
+                      (unsigned)(copy + 1u),
+                      (unsigned)LIGHT_ACK_BURST_COUNT,
+                      (unsigned long)delays_ms[copy]);
+        }
+    }
+}
+
+static uint8_t schedule_light_ack_retry(const resp_slot_t *failed_slot, uint32_t delay_ms)
+{
+    uint32_t now = HAL_GetTick();
+    int free_idx = -1;
+
+    if (failed_slot == NULL ||
+        failed_slot->kind != RESP_KIND_LIGHT_ACK ||
+        !failed_slot->has_raw_buf) {
+        return 0u;
+    }
+
+    __disable_irq();
+    for (int i = 0; i < RESP_QUEUE_SIZE; ++i) {
+        if (!g_resp_q[i].pending) {
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx >= 0) {
+        memcpy(&g_resp_q[free_idx], failed_slot, sizeof(g_resp_q[free_idx]));
+        g_resp_q[free_idx].pending = 1u;
+        g_resp_q[free_idx].due_tick = now + delay_ms;
+    }
+    __enable_irq();
+
+    if (free_idx < 0) {
+        uart6_log("[LIGHT_ACK_RETRY_DROP] msg=%u copy=%u/%u reason=qfull\r\n",
+                  (unsigned)failed_slot->msg_id,
+                  (unsigned)failed_slot->tx_copy,
+                  (unsigned)LIGHT_ACK_BURST_COUNT);
+        return 0u;
+    }
+
+    return 1u;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -3555,6 +3706,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   DWT_CYCCNT_Init();
   MX_X_CUBE_AI_Init();
+  AI_Runtime_Init();
   HAL_UART_Receive_IT(&huart1, &rxByte1, 1);
   HAL_UART_Receive_IT(&huart6, &rxByte, 1);
 
@@ -3781,6 +3933,7 @@ int main(void)
 	                       g_last_light_control_tick);
 	         ai_schedule_poll(now);
 	         sensor_pipeline_poll(now);
+             AI_Runtime_Poll(HAL_GetTick());
 
 	          //===================== RTC / SUN =====================
 	         if ((uint32_t)(now - rtc_dbg_tick) >= 180000u) {
@@ -4657,7 +4810,7 @@ void resp_slot_task_poll(void)
             HAL_UART_Transmit(&huart6, (uint8_t*)msg, (uint16_t)n, 100);
         }
 
-        if (g_resp_slot.tmid != 0u) {
+        {
             uint8_t tx_cmd = CMD_ACK_RELAY;
 
             if (g_resp_slot.len >= 1u) {
@@ -4669,12 +4822,67 @@ void resp_slot_task_poll(void)
             }
 
             if (g_resp_slot.kind == RESP_KIND_LIGHT_ACK) {
-                (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
-            } else if (!enqueue_transport_tx(g_resp_slot.tmid, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len, HOP_TTL_DEFAULT)) {
-                (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
+                uint8_t tx_ok;
+                uint8_t tx_ttl = (g_resp_slot.tmid != 0u) ? HOP_TTL_DEFAULT : 0u;
+                uint8_t attempt = (uint8_t)(g_resp_slot.tx_attempts + 1u);
+
+                tx_ok = send_transport_direct(g_resp_slot.tmid,
+                                              tx_ttl,
+                                              tx_cmd,
+                                              0u,
+                                              g_resp_slot.msg_id,
+                                              g_resp_slot.buf,
+                                              g_resp_slot.len);
+
+                if (tx_ok) {
+                    uart6_log("[LIGHT_ACK_TX_OK] cmd=0x%02X msg=%u copy=%u/%u attempt=%u/%u\r\n",
+                              (unsigned)tx_cmd,
+                              (unsigned)g_resp_slot.msg_id,
+                              (unsigned)g_resp_slot.tx_copy,
+                              (unsigned)LIGHT_ACK_BURST_COUNT,
+                              (unsigned)attempt,
+                              (unsigned)LIGHT_ACK_TX_MAX_ATTEMPTS);
+                } else {
+                    wisun_tx_status_t tx_status = wisun_transport_get_last_status();
+                    uint32_t retry_delay = (tx_status == WISUN_TX_STATUS_BUSY)
+                        ? LIGHT_ACK_TX_BUSY_RETRY_MS
+                        : LIGHT_ACK_TX_FAIL_RETRY_MS;
+
+                    g_resp_slot.tx_attempts = attempt;
+
+                    if (tx_status == WISUN_TX_STATUS_TIMEOUT ||
+                        tx_status == WISUN_TX_STATUS_ERROR) {
+                        wisun_transport_abort_tx();
+                    }
+
+                    if (attempt < LIGHT_ACK_TX_MAX_ATTEMPTS &&
+                        schedule_light_ack_retry(&g_resp_slot, retry_delay)) {
+                        uart6_log("[LIGHT_ACK_TX_RETRY] cmd=0x%02X msg=%u copy=%u/%u status=%u next=%u/%u delay=%lu\r\n",
+                                  (unsigned)tx_cmd,
+                                  (unsigned)g_resp_slot.msg_id,
+                                  (unsigned)g_resp_slot.tx_copy,
+                                  (unsigned)LIGHT_ACK_BURST_COUNT,
+                                  (unsigned)tx_status,
+                                  (unsigned)(attempt + 1u),
+                                  (unsigned)LIGHT_ACK_TX_MAX_ATTEMPTS,
+                                  (unsigned long)retry_delay);
+                    } else {
+                        uart6_log("[LIGHT_ACK_TX_FAIL] cmd=0x%02X msg=%u copy=%u/%u status=%u attempts=%u\r\n",
+                                  (unsigned)tx_cmd,
+                                  (unsigned)g_resp_slot.msg_id,
+                                  (unsigned)g_resp_slot.tx_copy,
+                                  (unsigned)LIGHT_ACK_BURST_COUNT,
+                                  (unsigned)tx_status,
+                                  (unsigned)attempt);
+                    }
+                }
+            } else if (g_resp_slot.tmid != 0u) {
+                if (!enqueue_transport_tx(g_resp_slot.tmid, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len, HOP_TTL_DEFAULT)) {
+                    (void)send_transport_direct(g_resp_slot.tmid, HOP_TTL_DEFAULT, tx_cmd, 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
+                }
+            } else {
+                (void)send_transport_direct(0x0000u, 0u, g_resp_slot.buf[0], 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
             }
-        } else {
-            (void)send_transport_direct(0x0000u, 0u, g_resp_slot.buf[0], 0u, g_resp_slot.msg_id, g_resp_slot.buf, g_resp_slot.len);
         }
 
         memset(&g_resp_slot, 0, sizeof(g_resp_slot));

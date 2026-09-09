@@ -13,22 +13,22 @@
 #include <stddef.h>
 //#include "data_samples.h"
 
-/* AE 입력/출력 차원 (현재 130차원 FFT+vi_i+vi_v) */
+/* ON_TEST_v1: [peak_freq_khz, adc_pk_fft, voltage_v, current_a]. */
 #define AE_IN_DIM   (4)
 #define AE_OUT_DIM  (4)
 
-/* --- 입력/출력 양자화 파라미터 (STM32 로그 기반) --- */
-/* input:  0.003761707,-128,int8 */
-#define AE_IN_SCALE       (0.003918087f)
+/* Quantization from ai_model.onnx / network_generate_report.txt. */
+#define AE_IN_SCALE       (0.003766168f)
 #define AE_IN_ZERO_POINT  (-128)
 
-/* output: O[0] ... 0.003805347,-128,int8 */
-#define AE_OUT_SCALE      (0.003799048f)
+#define AE_OUT_SCALE      (0.003898344f)
 #define AE_OUT_ZERO_POINT (-128)
 
-/* --- MSE 임계값 (PC AE + MinMax 후 best-F1 threshold) --- */
-//#define AE_THRESH (4.948393878318489e-06f)		//  report.json 참고
-#define AE_THRESH (0.01730970f)						// 임의 보정 값
+/* Normal/anomaly MSE threshold configured in ON_TEST_v1. */
+#define AE_THRESH (0.011325965f)
+#define AE_HI_LOW  (0.000452750f)
+#define AE_HI_HIGH (0.000475430f)
+#define RUL_CALC_INTERVAL_HOURS (1.0f)
 
 #define AE_COLS (4)  // expected 4
 

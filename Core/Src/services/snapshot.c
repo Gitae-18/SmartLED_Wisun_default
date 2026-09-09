@@ -527,7 +527,8 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
                                  uint8_t ttl,
                                  uint8_t control_mode,
                                  uint16_t on_time_min,
-                                 uint16_t off_time_min)
+                                 uint16_t off_time_min,
+                                 uint16_t rul_percent_x100)
 {
     uint16_t off = 0u;
     uint32_t fft_freq_x100 = 0u;
@@ -540,7 +541,7 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
         return 0u;
     }
 
-    if (out_cap < SNAP_COMPACT_BODY_LEN_V2) {
+    if (out_cap < SNAP_COMPACT_BODY_LEN_V3) {
         return 0u;
     }
 
@@ -563,6 +564,9 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
      * 40       control_mode
      * 41~42    on_time_min, little-endian
      * 43~44    off_time_min, little-endian
+     *
+     * V3 추가:
+     * 45~46    RUL percent x100, little-endian
      */
 
     out[off++] = 0x01u;
@@ -655,6 +659,12 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
     out[off++] = (uint8_t)(off_time_min & 0xFFu);
     out[off++] = (uint8_t)((off_time_min >> 8) & 0xFFu);
 
+    if (rul_percent_x100 > 10000u) {
+        rul_percent_x100 = 10000u;
+    }
+    out[off++] = (uint8_t)(rul_percent_x100 & 0xFFu);
+    out[off++] = (uint8_t)((rul_percent_x100 >> 8) & 0xFFu);
+
     return off;
 }
 
@@ -669,7 +679,8 @@ bool is_compact_snap_body(const uint8_t *data, uint16_t len)
     }
 
     return (len == SNAP_COMPACT_BODY_LEN_V1 ||
-            len == SNAP_COMPACT_BODY_LEN_V2);
+            len == SNAP_COMPACT_BODY_LEN_V2 ||
+            len == SNAP_COMPACT_BODY_LEN_V3);
 }
 
 uint16_t compact_snap_count16(const uint8_t *data)

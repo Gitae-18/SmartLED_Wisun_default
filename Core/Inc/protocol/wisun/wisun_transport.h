@@ -7,6 +7,14 @@
 extern "C" {
 #endif
 
+typedef enum {
+    WISUN_TX_STATUS_OK = 0,
+    WISUN_TX_STATUS_BUSY,
+    WISUN_TX_STATUS_TIMEOUT,
+    WISUN_TX_STATUS_ERROR,
+    WISUN_TX_STATUS_INVALID
+} wisun_tx_status_t;
+
 /**
  * @brief 블로킹 전송 (HAL_UART_Transmit 기반)
  * @param data  전송할 바이트 배열 포인터
@@ -19,6 +27,8 @@ extern "C" {
  */
 bool wisun_transport_send_blocking(const uint8_t *data, uint16_t len);
 bool wisun_tx_adapter(const uint8_t *data, uint16_t len, void *user);
+wisun_tx_status_t wisun_transport_get_last_status(void);
+void wisun_transport_abort_tx(void);
 void dbg_dump_uart6(const uint8_t *p, uint16_t n);
 #ifdef __cplusplus
 }

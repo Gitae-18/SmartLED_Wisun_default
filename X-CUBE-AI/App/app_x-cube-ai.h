@@ -29,6 +29,7 @@ extern "C" {
 void MX_X_CUBE_AI_Init(void);
 void MX_X_CUBE_AI_Process(void);
 /* USER CODE BEGIN includes */
+int AI_ModelRun(const int8_t input[4], int8_t output[4]);
 int AI_Run_FromRaw(const float *x_raw, uint32_t len,
                    float *out_mse, int *out_pred);
 int run_inference(const float *x, float *mse, int *pred);

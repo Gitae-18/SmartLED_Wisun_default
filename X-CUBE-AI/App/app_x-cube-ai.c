@@ -58,7 +58,14 @@
 #include "network_data.h"
 /* USER CODE BEGIN includes */
 #include "app_x-cube-ai.h"
-#include "ai_config.h"
+#include "signal/ai_config.h"
+#include "signal/ai_inference.h"
+_Static_assert(AE_COLS == AI_NETWORK_IN_1_SIZE &&
+               AE_COLS == AI_NETWORK_OUT_1_SIZE,
+               "AI feature count must match the generated model");
+_Static_assert(AI_NETWORK_IN_1_FORMAT == AI_BUFFER_FORMAT_S8 &&
+               AI_NETWORK_OUT_1_FORMAT == AI_BUFFER_FORMAT_S8,
+               "AI preprocessing requires INT8 model input and output");
 /* USER CODE END includes */
 
 /* IO buffers ----------------------------------------------------------------*/
@@ -199,81 +206,31 @@ return 0;
 }
 
 
+int AI_ModelRun(const int8_t input[4], int8_t output[4])
+{
+    if (input == NULL || output == NULL || network == AI_HANDLE_NULL ||
+        ai_input == NULL || ai_output == NULL ||
+        ai_input[0].data == NULL || ai_output[0].data == NULL) return -1;
+    memcpy(AI_HANDLE_PTR(ai_input[0].data), input, AI_NETWORK_IN_1_SIZE_BYTES);
+    if (ai_network_run(network, ai_input, ai_output) != 1) {
+        ai_error error = ai_network_get_error(network);
+        printf("[AI] run failed type=%u code=%u\r\n", error.type, error.code);
+        return -2;
+    }
+    memcpy(output, AI_HANDLE_PTR(ai_output[0].data), AI_NETWORK_OUT_1_SIZE_BYTES);
+    return 0;
+}
+
+/* Compatibility for the existing MSE/prediction callers. */
 int AI_Run_FromRaw(const float *x_raw, uint32_t len,
                    float *out_mse, int *out_pred)
 {
-printf("run_inference...\r\n");
-if (network == AI_HANDLE_NULL) {
-printf("network not initialized!\r\n");
-return -1;
-}
-
-if (len != AE_COLS) {
-printf("AI_Run_FromRaw: len mismatch (%lu vs %d)\r\n",
-       (unsigned long)len, (int)AE_COLS);
-return -2;
-}
-
-// 1) MinMax 스케일링 (원본 -> 0~1)
-float x_scaled[AE_COLS];
-ai_minmax_scale(x_raw, x_scaled, AE_COLS);
-
-// 2) INT8 양자화
-ae_quantize_in_vec(
-  x_scaled,
-  (int8_t*)AI_HANDLE_PTR(ai_input[0].data),
-  AE_COLS);
-
-// 3) 모델 추론
-ai_i32 batch = ai_network_run(network, ai_input, ai_output);
-
-if (batch != 1) {
-ai_log_err(ai_network_get_error(network), "ai_network_run");
-return -3;
-}
-
-// 4) 출력 역양자화 (int8 -> float, 같은 스케일 도메인)
-const int8_t *out_q = (const int8_t*)AI_HANDLE_PTR(ai_output[0].data);
-float y_deq[AE_COLS];
-ae_dequantize_out_vec(out_q, y_deq, AE_COLS);
-
-// 5) MSE 계산 (외부로 안 내보냄)
-double acc = 0.0;
-for (int k = 0; k < AE_COLS; ++k) {
-double d = (double)x_scaled[k] - (double)y_deq[k];
-acc += d * d;
-}
-float mse = (float)(acc / (double)AE_COLS);
-
-//  int mse_int  = (int)mse;
-//  int mse_frac = (int)((mse - mse_int) * 100000000.0f);  // 소수점 8자리
-//
-//  if (mse_frac < 0) mse_frac = -mse_frac;
-//
-//  printf("  Infer MSE : %d.%08d\r\n", mse_int, mse_frac);
-
-//  printf("AE_COLS=%d\r\n", AE_COLS);
-//
-//  const int8_t *in_q  = (const int8_t*)AI_HANDLE_PTR(ai_input[0].data);
-//
-//  for (int k = 0; k < AE_COLS; ++k) {
-//      printf("[%d] in_q=%d out_q=%d x=%d y=%d\r\n",
-//          k,
-//          in_q[k],
-//          out_q[k],
-//          (int)(x_scaled[k] * 1000000.0f),
-//          (int)(y_deq[k] * 1000000.0f)
-//      );
-//  }
-
-
-// 6) Threshold 기반 분류 -> pred 리턴
-int pred_value = (mse >= AE_THRESH) ? 1 : 0;
-
-if (out_mse) *out_mse = mse;
-if (out_pred) *out_pred = pred_value;
-
-return 0;
+    if (len != AE_COLS) return -2;
+    AI_Result result = AI_infer(x_raw);
+    if (result.status != 0) return result.status;
+    if (out_mse != NULL) *out_mse = result.mse;
+    if (out_pred != NULL) *out_pred = result.is_anomaly;
+    return 0;
 }
 
 int run_inference(const float *x, float *mse, int *pred)
