@@ -14,6 +14,7 @@
 static struct {
     bool initialized;
     bool state_valid;
+    bool measurement_valid;
     bool dirty;
     uint32_t last_rul_tick;
     uint32_t last_save_attempt;
@@ -22,7 +23,19 @@ static struct {
 
 float AI_Runtime_GetRULPercent(void)
 {
-    return g_runtime.state_valid ? RUL_GetPercent() : NAN;
+    RUL_State state;
+    if (!g_runtime.initialized || !g_runtime.state_valid ||
+        !g_runtime.measurement_valid ||
+        (uint32_t)(HAL_GetTick() - g_runtime.last_rul_tick) >= RUL_INTERVAL_MS)
+        return NAN;
+    RUL_GetState(&state);
+    /* A zero-damage recovery record is not a completed life calculation. */
+    return state.sample_count != 0u ? RUL_GetPercent() : NAN;
+}
+
+void AI_Runtime_InvalidateMeasurement(void)
+{
+    g_runtime.measurement_valid = false;
 }
 
 bool AI_Runtime_SaveState(void)
@@ -44,6 +57,8 @@ bool AI_Runtime_SaveState(void)
 
 void AI_Runtime_Init(void)
 {
+    uart6_log("[AI_CONFIG] smps_watts=%u mse_threshold=%.9f\r\n",
+              (unsigned)AI_SMPS_RATED_WATTS, (double)AE_THRESH);
     memset(&g_runtime, 0, sizeof(g_runtime));
     RUL_Reset();
     RUL_State saved;
@@ -52,6 +67,7 @@ void AI_Runtime_Init(void)
     g_runtime.last_rul_tick = HAL_GetTick();
     if (status == RUL_STORAGE_LOADED) {
         g_runtime.state_valid = RUL_Restore(&saved);
+        g_runtime.measurement_valid = g_runtime.state_valid;
     } else if (status == RUL_STORAGE_EMPTY) {
         g_runtime.state_valid = true;
         g_runtime.dirty = true;
@@ -74,6 +90,7 @@ void AI_Runtime_Poll(uint32_t now)
 AI_Result AI_Runtime_Process(const AI_RuntimeInput *input)
 {
     AI_Result result = {.status = -1};
+    AI_Runtime_InvalidateMeasurement();
     if (!g_runtime.initialized || input == NULL) return result;
     result = AI_infer(input->model_input);
     if (result.status != 0) {
@@ -82,6 +99,7 @@ AI_Result AI_Runtime_Process(const AI_RuntimeInput *input)
     }
     ++g_runtime.inference_count;
     bool temp_valid = input->temperature_valid && isfinite(input->temperature_c);
+    g_runtime.measurement_valid = temp_valid;
     uint32_t now = HAL_GetTick();
     if (g_runtime.state_valid && temp_valid &&
         (uint32_t)(now - g_runtime.last_rul_tick) >= RUL_INTERVAL_MS) {

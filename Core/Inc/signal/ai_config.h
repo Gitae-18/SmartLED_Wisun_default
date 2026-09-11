@@ -24,8 +24,24 @@
 #define AE_OUT_SCALE      (0.003898344f)
 #define AE_OUT_ZERO_POINT (-128)
 
-/* Normal/anomaly MSE threshold configured in ON_TEST_v1. */
-#define AE_THRESH (0.011325965f)
+/* Explicit SMPS/threshold pair for this firmware build. No MID-based guessing.
+ * The 100 W default preserves ON_TEST_v1; its calibration still needs review.
+ * For any other rating, supply a measured AI_SMPS_MSE_THRESHOLD as well.
+ * Changing this pair does not replace the model, scaler, or HI calibration. */
+#ifndef AI_SMPS_RATED_WATTS
+#define AI_SMPS_RATED_WATTS 100
+#endif
+#if AI_SMPS_RATED_WATTS <= 0 || AI_SMPS_RATED_WATTS > 65535
+#error "AI_SMPS_RATED_WATTS must be a positive uint16 watt rating"
+#endif
+#ifndef AI_SMPS_MSE_THRESHOLD
+#if AI_SMPS_RATED_WATTS == 100
+#define AI_SMPS_MSE_THRESHOLD (0.011325965f)
+#else
+#error "Supply a validated AI_SMPS_MSE_THRESHOLD for this SMPS rating"
+#endif
+#endif
+#define AE_THRESH AI_SMPS_MSE_THRESHOLD
 #define AE_HI_LOW  (0.000452750f)
 #define AE_HI_HIGH (0.000475430f)
 #define RUL_CALC_INTERVAL_HOURS (1.0f)

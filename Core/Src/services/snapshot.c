@@ -340,6 +340,14 @@ int32_t scale_fft_amp_x1000(float amp)
     return (int32_t)scaled;
 }
 
+uint16_t scale_rul_percent_x100(float percent)
+{
+    if (!isfinite(percent) || percent < 0.0f || percent > 100.0f)
+        return SNAP_RUL_PERCENT_INVALID;
+    /* Truncate below 0.01%; double avoids rounding up during scaling. */
+    return (uint16_t)((double)percent * 100.0);
+}
+
 uint32_t scale_ai_mse_x1000000(float mse)
 {
     double scaled;
@@ -660,7 +668,7 @@ uint16_t encode_snap_compact_bin(uint8_t *out,
     out[off++] = (uint8_t)((off_time_min >> 8) & 0xFFu);
 
     if (rul_percent_x100 > 10000u) {
-        rul_percent_x100 = 10000u;
+        rul_percent_x100 = SNAP_RUL_PERCENT_INVALID;
     }
     out[off++] = (uint8_t)(rul_percent_x100 & 0xFFu);
     out[off++] = (uint8_t)((rul_percent_x100 >> 8) & 0xFFu);

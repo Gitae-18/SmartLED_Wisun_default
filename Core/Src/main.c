@@ -2654,6 +2654,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         ((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) == 0u) ? 1u : 0u;
     run_ai =
         ((g_sensor_capture_active & SENSOR_CAPTURE_AI) != 0u) ? 1u : 0u;
+    if (run_ai) {
+        AI_Runtime_InvalidateMeasurement();
+    }
 
     __disable_irq();
     g_snapshot_suppress_next_tx = 0u;
@@ -2701,10 +2704,12 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     VIRead vi;
     float vin_v = 0.0f;
     float i_adc_v = 0.0f;
+    uint8_t vi_valid = 0u;
 
     if (AD_DC_Injected_Once(&vi) == HAL_OK) {
         vin_v = adc_raw_to_dc_vin(vi.volt_raw);
         i_adc_v = adc_raw_to_dc_current(vi.curr_raw);
+        vi_valid = isfinite(vin_v) && isfinite(i_adc_v);
     }
 
     /* ===== 온도 측정 ===== */
@@ -2947,7 +2952,7 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
         snap_ai_pred = 0;
     }
 
-    if (run_ai && fft_cnt > 0u) {
+    if (run_ai && fft_cnt > 0u && vi_valid) {
         float ai_features[AE_COLS] = {0};
         /* Match ON_TEST_v1: Hann/3-bin RSS magnitude -> ADC peak counts.
          * Keep fft_amp[] in its existing units for Wi-SUN snapshots. */
@@ -3081,18 +3086,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
             &control_off_min
         );
 
-        float rul_percent = RUL_GetPercent();
-        if (!isfinite(rul_percent)) {
-            rul_percent = 0.0f;
-        }
-        if (rul_percent < 0.0f) {
-            rul_percent = 0.0f;
-        }
-        if (rul_percent > 100.0f) {
-            rul_percent = 100.0f;
-        }
+        float rul_percent = AI_Runtime_GetRULPercent();
         uint16_t rul_percent_x100 =
-            (uint16_t)(rul_percent * 100.0f + 0.5f);
+            scale_rul_percent_x100(rul_percent);
 
         snap_body_len = encode_snap_compact_bin( snap_body, (uint16_t)sizeof(snap_body), uid12, vin_v, i_adc_v, temp_c, light_on ? 1u : 0u, local_fft_cnt > 0u ? 1u : 0u, local_fft0_freq, local_fft0_amp, local_monitor_count, snap_ai_valid, snap_ai_mse_x1000000, (int8_t)snap_ai_pred, 1u, SNAP_COMPACT_TTL_DEFAULT, control_mode, control_on_min, control_off_min, rul_percent_x100 );
 

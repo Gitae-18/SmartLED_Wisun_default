@@ -11,6 +11,8 @@ AI_Result AI_infer(const float sensor_data[AE_COLS])
     int8_t input_quantized[AE_COLS];
     int8_t output_quantized[AE_COLS];
     float output_dequantized[AE_COLS];
+    /* Reject a malformed build setting instead of reporting every input normal. */
+    if (!isfinite(AE_THRESH) || AE_THRESH <= 0.0f) return result;
     if (sensor_data == NULL) return result;
     for (int i = 0; i < AE_COLS; ++i) {
         if (!isfinite(sensor_data[i])) return result;

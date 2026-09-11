@@ -20,6 +20,11 @@ AI_Result AI_Runtime_Process(const AI_RuntimeInput *input);
 /* Main-loop retry of failed saves; never call storage from an ISR. */
 void AI_Runtime_Poll(uint32_t now);
 bool AI_Runtime_SaveState(void);
-float AI_Runtime_GetRULPercent(void); /* NAN when storage has no valid recovery. */
+/* Mark a failed/skipped AI measurement (including unavailable FFT data).
+ * Keeps accumulated damage intact; the next valid measurement can recover. */
+void AI_Runtime_InvalidateMeasurement(void);
+/* NAN before the first completed update, after invalid measurements/recovery,
+ * or when an hourly update is overdue. */
+float AI_Runtime_GetRULPercent(void);
 
 #endif

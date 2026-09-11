@@ -19,10 +19,10 @@ AI_Runtime_Process -> AI_infer -> Min-Max -> INT8 quantization
   -> hourly RUL_Update -> RUL_Storage_Save
 ```
 
-The fixed model settings remain:
+The model settings are:
 
 - Input/output: 4 INT8 values; scales `0.003766168` / `0.003898344`; zero points -128.
-- Anomaly: MSE >= `0.011325965`.
+- Anomaly: MSE >= `AI_SMPS_MSE_THRESHOLD` (100 W default `0.011325965`).
 - HI: clamp((MSE - `0.000452750`) / (`0.000475430` - `0.000452750`), 0, 1).
 - Min-Max bounds are unchanged from the ON_TEST_v1 model migration.
 
@@ -38,8 +38,76 @@ HI smoothing, like the reference project, runs at the hourly RUL update cadence.
 
 UART6 emits `[AI_RUNTIME]` with MSE, prediction (0 normal / 1 anomaly), HI,
 temperature validity, RUL percent, and whether the state was saved. The existing
-Wi-SUN MSE/prediction fields continue to be populated. HI/RUL are not added to the
-gateway packet schema by this change.
+Wi-SUN MSE/prediction fields continue to be populated. Compact SNAP V3 sends RUL
+at bytes 45..46 as described below; HI is not a packet field.
+
+## RUL availability and receiver integration (2026-09-10)
+
+Transmission now uses `AI_Runtime_GetRULPercent()` rather than the raw damage
+getter. It returns NaN when initialization/recovery is invalid, no hourly update
+has completed, the latest attempted AI measurement has invalid input or failed
+inference, or an hourly update is due but has not completed. An invalid temperature
+blocks RUL even when AI succeeds. Missing FFT or failed voltage/current acquisition
+also invalidates the attempted AI/RUL measurement. A valid recovered state with
+completed updates can be reported after reboot, until a measurement fails or an
+update becomes due. Invalid measurements never erase accumulated damage; the next
+valid measurement restores availability (and performs a due update).
+
+The initial zero-damage recovery record is still saved, but it is not reported as
+100% before the first successful hourly calculation. A failed Flash save retains
+the valid calculated RAM result and retries; it does not itself invalidate RUL.
+
+Compact SNAP V3 remains 47 bytes. Bytes 45..46 are unsigned little endian:
+
+| Wire value | Meaning |
+| --- | --- |
+| 0..10000 | Valid RUL, divide by 100 for percent |
+| 65535 (`FF FF`) | RUL unavailable |
+| 10001..65534 | Invalid/reserved; receiver must not display as a percentage |
+
+The scaler maps NaN, infinity and out-of-range percentages to 65535. The actual
+packet encoder preserves this sentinel instead of clamping it to 10000. Valid
+percentages are truncated to two decimal places before transmission:
+99.999% becomes 99.99% (9999), and 98.765% becomes 98.76% (9876).
+Exactly 100% remains 100.00% (10000).
+
+Receiver logic must check the raw integer BEFORE scaling or clamping. For JSON,
+represent unavailable as `null` and optionally `rul_valid: false`:
+
+```python
+raw = int.from_bytes(body[45:47], "little") if len(body) == 47 else None
+rul_valid = raw is not None and 0 <= raw <= 10000
+rul_percent = raw / 100.0 if rul_valid else None
+```
+
+Without receiver support, a decoder that blindly divides may display 655.35%.
+The receiver/JSON service has not been modified in this device workspace.
+
+## SMPS threshold configuration
+
+`ON_TEST_v1` has one default threshold plus an in-memory setter, with no
+capacity-specific table or terminal-to-capacity mapping. Its `ai_config.h` records
+10,000 normal samples with P99.9 = 0.008074203, while the configured threshold is
+0.011325965. The exact calibration for that difference has not been located.
+The default is preserved for the supplied 100 W model, not newly validated.
+
+Build settings in `Core/Inc/signal/ai_config.h` now pair:
+
+- `AI_SMPS_RATED_WATTS`: default 100; explicit rating for this firmware image.
+- `AI_SMPS_MSE_THRESHOLD`: default 0.011325965 only when rating is 100.
+
+For a 125 W build, define `AI_SMPS_RATED_WATTS=125` and define
+`AI_SMPS_MSE_THRESHOLD` to the validated MSE threshold for the intended model and
+preprocessing. Apply both to all translation units. A non-100 W build without an
+explicit threshold fails compilation; a nonfinite/nonpositive threshold causes
+inference to return invalid. Boot logs `[AI_CONFIG]` with the selected pair.
+
+No 125 W threshold has been invented or deployed. This is build-time selection,
+not automatic detection, a MID=25 override, or a gateway configuration command.
+An unchanged default firmware on a 125 W device still uses the 100 W setting.
+Supporting a single image with per-device selection requires an agreed device
+configuration/protocol and validated profiles. Merely changing the threshold does
+not validate the 100 W model/scaler or the fixed HI/RUL calibration on 125 W.
 
 ## Flash policy
 
@@ -92,7 +160,9 @@ Run `python tests/test_hi_rul.py --cc <native-gcc>` for host tests against the
 production calculation, inference and journal sources. The fake hardware injects
 torn writes at each record byte, unreadable records and interrupted sector erase.
 Tests also cover CRC fallback, sector rotation, reboot restore, invalid sensor
-input, temperature gating, save retries and tick wraparound.
+input, temperature gating, save retries and tick wraparound. The 2026-09-10 tests
+include the production SNAP encoder, RUL sentinel propagation/recovery, and
+build-time threshold selection using synthetic thresholds (not calibration data).
 
 Debug was fully rebuilt and linked successfully. Host tests simulate the Flash
 medium and neural-network output; they do not validate actual Flash electrical
@@ -102,3 +172,7 @@ state, then test interrupted writes/sector rotation with controlled power cuts.
 
 Pre-change files: `Debug/hi-rul-backup-20260909-121322`.
 Build log: `Debug/hi-rul-build.log`.
+
+2026-09-10 exception/configuration build log: `Debug/rul-exception-build.log`.
+The firmware was compiled and linked; no board flashing or receiver end-to-end
+test was performed for this update.

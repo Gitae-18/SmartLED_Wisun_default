@@ -86,7 +86,7 @@ extern "C" {
  *   43..44  : effective OFF time, minute-of-day, little endian
  *
  * Compact SNAP V3 adds:
- *   45..46  : RUL percent x100, little endian (0..10000)
+ *   45..46  : RUL percent x100, little endian (0..10000; 0xFFFF unavailable)
  */
 #define SNAP_COMPACT_BODY_LEN_V1       40u
 #define SNAP_COMPACT_BODY_LEN_V2       45u
@@ -104,6 +104,7 @@ extern "C" {
 #define SNAP_COMPACT_RUL_PERCENT_IDX   45u
 
 #define SNAP_CONTROL_TIME_INVALID 0xFFFFu
+#define SNAP_RUL_PERCENT_INVALID  0xFFFFu
 #define SNAP_COMPACT_TYPE_IDX           0u
 typedef struct {
     bool     light_on;
@@ -160,6 +161,8 @@ uint8_t apply_snapshot_uart_cmd(const char *arg);
 uint32_t scale_fft_freq_x100(float freq_hz);
 int32_t scale_fft_amp_x1000(float amp);
 uint32_t scale_ai_mse_x1000000(float mse);
+/* Truncate to 0.01%; nonfinite/out-of-range values are sent as unavailable. */
+uint16_t scale_rul_percent_x100(float percent);
 float snap_round_4dp(float v);
 
 uint16_t encode_snap_bin(uint8_t *out,
