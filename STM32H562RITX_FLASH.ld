@@ -46,8 +46,14 @@ MEMORY
 {
   RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 640K
 
-  /* 코드/상수 올라가는 영역 (2MB - 8KB = 0x001FE000) */
-  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 0x001FE000
+  /* Reserve the last four 8-KB sectors for RUL and existing settings. */
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 0x001F8000
+
+  /* RUL journal: Bank 2 sectors 124/125, written only by rul_flash.c. */
+  RULCFG (rw)  : ORIGIN = 0x081F8000, LENGTH = 0x00004000
+
+  /* AI cadence settings, Bank 2 sector 126. */
+  AICFG  (rw)  : ORIGIN = 0x081FC000, LENGTH = 0x00002000
 
   /* 맨 끝 8KB(0x081FE000~0x081FFFFF)를 설정 저장 전용 영역으로 예약 */
   CFG    (rw)  : ORIGIN = 0x081FE000, LENGTH = 0x00002000

@@ -259,6 +259,39 @@ typedef struct {
 #define WISUN_AT_COMMAND_ENABLE 0
 #endif
 
+/* Optional factory/test override. Normal boot adopts MID from AT+CFG?. */
+#ifndef WISUN_BOOT_MID_AT_ENABLE
+#define WISUN_BOOT_MID_AT_ENABLE 0
+#endif
+
+#ifndef WISUN_BOOT_AT_MID
+#define WISUN_BOOT_AT_MID 25u
+#endif
+
+#ifndef WISUN_BOOT_AT_START_DELAY_MS
+#define WISUN_BOOT_AT_START_DELAY_MS 1500u
+#endif
+
+#ifndef WISUN_BOOT_AT_REPEAT_COUNT
+#define WISUN_BOOT_AT_REPEAT_COUNT 3u
+#endif
+
+#ifndef WISUN_BOOT_AT_REPEAT_INTERVAL_MS
+#define WISUN_BOOT_AT_REPEAT_INTERVAL_MS 100u
+#endif
+
+#ifndef FW_BOOT_REPORT_DELAY_MS
+#define FW_BOOT_REPORT_DELAY_MS 3000u
+#endif
+
+#ifndef APP_FW_VERSION
+#define APP_FW_VERSION "1.0.0"
+#endif
+
+#ifndef AI_MODEL_VERSION_STRING
+#define AI_MODEL_VERSION_STRING "1.0.0"
+#endif
+
 #ifndef DEBUG_FFT_DATA_EXTRACT_MODE
 #define DEBUG_FFT_DATA_EXTRACT_MODE 0
 #endif
@@ -321,6 +354,7 @@ typedef struct {
 #define LIGHT_ON_ACK 0x33
 #define GET_NODE_INFO 0x40
 #define SET_ASTRO_SETTING 0x45
+#define GET_VERSION 0x46u
 #define GET_CH 0x24
 #define SET_CH 0x25
 #define T_GET_CH_RESP 0x24
@@ -531,9 +565,9 @@ static uint16_t ascii_index = 0;
 
 uint8_t rxByte, rxByte1;
 uint8_t pc_rx_buffer[RX_BUFFER_SIZE];
-uint8_t wisun_rx_buffer[RX_BUFFER_SIZE];
+uint8_t wisun_rx_buffer[PACKET_MAX_SIZE];
 uint8_t pc_rx_index = 0;
-uint8_t wisun_rx_index = 0;
+uint16_t wisun_rx_index = 0;
 uint8_t g_region_code;
 
 uint16_t g_sunrise_min;
@@ -587,6 +621,7 @@ static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 static void apply_mid(uint16_t new_mid);
+static void sync_mid_from_wisun(uint16_t module_mid);
 static void apply_rch(uint8_t r0, uint8_t r1);
 static void apply_mid_chan_from_cfg(void);
 static void ai_service(void);
@@ -639,6 +674,12 @@ void resp_slot_task_poll(void);
 static void rstrip_inplace(char *s);
 static void wisun_activity_mark(uint32_t now);
 static void wisun_idle_reset_poll(uint32_t now);
+static void wisun_boot_mid_at_poll(uint32_t now);
+static void firmware_boot_report_poll(uint32_t now);
+static uint16_t build_firmware_version_json(char *out, uint16_t out_cap,
+                                            const char *reason,
+                                            uint8_t include_msg_id,
+                                            uint16_t msg_id);
 // void Send_UID_UART2(void);
 // void Send_Device_ID_UART2(void);
 // void Send_Broadcast_Command(uint8_t *request_data, uint8_t request_length);
@@ -784,6 +825,115 @@ static void wisun_idle_reset_poll(uint32_t now)
 #else
     (void)now;
 #endif
+}
+
+static void wisun_boot_mid_at_poll(uint32_t now)
+{
+#if WISUN_BOOT_MID_AT_ENABLE
+    static uint8_t sent_count = 0u;
+    static uint32_t next_tick = WISUN_BOOT_AT_START_DELAY_MS;
+    char cmd[32];
+    int len;
+    HAL_StatusTypeDef status;
+
+    if (sent_count >= WISUN_BOOT_AT_REPEAT_COUNT ||
+        (int32_t)(now - next_tick) < 0) {
+        return;
+    }
+
+    len = snprintf(cmd, sizeof(cmd), "AT+MID:%u\r\n",
+                   (unsigned)WISUN_BOOT_AT_MID);
+
+    if (len <= 0 || len >= (int)sizeof(cmd)) {
+        sent_count = WISUN_BOOT_AT_REPEAT_COUNT;
+        return;
+    }
+
+    status = HAL_UART_Transmit(&huart1, (uint8_t *)cmd, (uint16_t)len, 100u);
+    if (status != HAL_OK) {
+        return;
+    }
+
+    uart6_log("[WISUN_BOOT_AT] %s", cmd);
+    sent_count++;
+    next_tick = now + WISUN_BOOT_AT_REPEAT_INTERVAL_MS;
+
+    if (sent_count >= WISUN_BOOT_AT_REPEAT_COUNT &&
+        (my_mid != WISUN_BOOT_AT_MID ||
+         g_node_cfg.mid != WISUN_BOOT_AT_MID ||
+         !g_node_cfg.mid_assigned)) {
+        apply_mid((uint16_t)WISUN_BOOT_AT_MID);
+    }
+#else
+    (void)now;
+#endif
+}
+
+static uint16_t build_firmware_version_json(char *out, uint16_t out_cap,
+                                            const char *reason,
+                                            uint8_t include_msg_id,
+                                            uint16_t msg_id)
+{
+    int len;
+
+    if (out == NULL || out_cap == 0u || reason == NULL) {
+        return 0u;
+    }
+
+    /*
+     * Compact wire keys keep the relayed AA frame below the 100-byte UART RX
+     * buffer limit. Gateway expansion: m=mid, f=app_fw, a=ai_version,
+     * r=reason, i=msg_id.
+     */
+    if (include_msg_id) {
+        len = snprintf(out, out_cap,
+                       "{\"m\":%u,\"f\":\"%s\"," 
+                       "\"a\":\"%s\",\"r\":\"%s\"," 
+                       "\"i\":%u}",
+                       (unsigned)my_mid,
+                       APP_FW_VERSION,
+                       AI_MODEL_VERSION_STRING,
+                       reason,
+                       (unsigned)msg_id);
+    } else {
+        len = snprintf(out, out_cap,
+                       "{\"m\":%u,\"f\":\"%s\"," 
+                       "\"a\":\"%s\",\"r\":\"%s\"}",
+                       (unsigned)my_mid,
+                       APP_FW_VERSION,
+                       AI_MODEL_VERSION_STRING,
+                       reason);
+    }
+
+    if (len <= 0 || len >= (int)out_cap) {
+        return 0u;
+    }
+
+    return (uint16_t)len;
+}
+
+static void firmware_boot_report_poll(uint32_t now)
+{
+    static uint8_t sent = 0u;
+    char json[128];
+    uint16_t json_len;
+
+    if (sent || now < FW_BOOT_REPORT_DELAY_MS || !node_is_provisioned()) {
+        return;
+    }
+
+    json_len = build_firmware_version_json(json, (uint16_t)sizeof(json),
+                                           "boot", 0u, 0u);
+    if (json_len == 0u) {
+        sent = 1u;
+        return;
+    }
+
+    if (send_transport_direct(0x0000u, 0u, GET_VERSION, 0u, 0u,
+                              (const uint8_t *)json, json_len)) {
+        uart6_log("[FW_VERSION_BOOT_TX] %s\r\n", json);
+        sent = 1u;
+    }
 }
 
 
@@ -970,7 +1120,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		        }
 		    }
 		    else if (packet_state == RECEIVING_PACKET) {
-		        if (wisun_rx_index < RX_BUFFER_SIZE - 1) {
+		        if (wisun_rx_index < PACKET_MAX_SIZE) {
 		            wisun_rx_buffer[wisun_rx_index++] = rxByte1;
 
 		            uint16_t expected_len = wisun_expected_packet_len(wisun_rx_buffer, wisun_rx_index);
@@ -1546,7 +1696,41 @@ static void handle_binary_cmd(uint8_t cmd, uint8_t flags, uint16_t msg_id, uint1
                     (uint16_t)sizeof(resp)
                 );
                 break;
-            }            
+            }
+            case GET_VERSION:   // 0x46
+            {
+                char json[128];
+                uint8_t tx_ok;
+                uint16_t json_len = build_firmware_version_json(
+                    json,
+                    (uint16_t)sizeof(json),
+                    "request",
+                    1u,
+                    msg_id
+                );
+
+                if (json_len == 0u) {
+                    uart6_log("[FW_VERSION_RESP_DROP] reason=json_encode msg_id=%u\r\n",
+                              (unsigned)msg_id);
+                    break;
+                }
+
+                tx_ok = enqueue_transport_tx(tmid, GET_VERSION, 0u, msg_id,
+                                             (const uint8_t *)json, json_len,
+                                             HOP_TTL_DEFAULT);
+                if (!tx_ok) {
+                    tx_ok = send_transport_direct(tmid, HOP_TTL_DEFAULT,
+                                                  GET_VERSION, 0u, msg_id,
+                                                  (const uint8_t *)json, json_len);
+                }
+
+                uart6_log(tx_ok ?
+                          "[FW_VERSION_RESP_TX] dst=%u %s\r\n" :
+                          "[FW_VERSION_RESP_DROP] dst=%u %s\r\n",
+                          (unsigned)tmid,
+                          json);
+                break;
+            }
             default:
                 break;
         }
@@ -2331,6 +2515,9 @@ void wisun_process_rx_mainloop(void)
             g_hop_q[qi].compact_snap = 1u;
             g_hop_q[qi].data_len = v.data_len;
             memcpy(g_hop_q[qi].data, v.data, v.data_len);
+            g_hop_q[qi].data_signature =
+                wisun_router_payload_signature(g_hop_q[qi].data,
+                                               g_hop_q[qi].data_len);
             g_hop_q[qi].due_tick = now + base_delay + jitter;
             g_hop_q[qi].in_use = 1u;
             hop_mark_key(compact_key);
@@ -2472,6 +2659,9 @@ void wisun_process_rx_mainloop(void)
             g_hop_q[qi].compact_snap = 0u;
             g_hop_q[qi].data_len = v.data_len;
             memcpy(g_hop_q[qi].data, v.data, v.data_len);
+            g_hop_q[qi].data_signature =
+                wisun_router_payload_signature(g_hop_q[qi].data,
+                                               g_hop_q[qi].data_len);
 
             g_hop_q[qi].due_tick = now + base_delay + jitter;
             g_hop_q[qi].in_use   = 1;
@@ -3831,6 +4021,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  uint32_t now = HAL_GetTick();
+	  wisun_boot_mid_at_poll(now);
+	  firmware_boot_report_poll(now);
 	  static uint32_t rtc_dbg_tick = 0;
 	  /*static uint32_t t0 = 0, t1 = 0;
 	  t0 = DWT->CYCCNT;
@@ -5129,6 +5321,46 @@ void Query_MID_From_WiSUN(void) {
     HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
 }
 
+static void sync_mid_from_wisun(uint16_t module_mid)
+{
+    uint16_t stored_mid = MID_INVALID;
+    uint16_t old_mid = my_mid;
+    bool mid_flash_matches;
+    bool cfg_matches;
+    bool mid_save_ok = true;
+    bool cfg_save_ok = true;
+
+    if (module_mid == 0u || module_mid == MID_INVALID) {
+        uart6_log("[MID_SYNC_DROP] invalid_module_mid=%u\r\n",
+                  (unsigned)module_mid);
+        return;
+    }
+
+    mid_flash_matches = load_mid_from_flash(&stored_mid) &&
+                        stored_mid == module_mid;
+    cfg_matches = g_node_cfg.mid_assigned &&
+                  g_node_cfg.mid == module_mid;
+
+    /* The Wi-SUN module is authoritative for the runtime MID. */
+    my_mid = module_mid;
+    g_node_cfg.mid = module_mid;
+    g_node_cfg.mid_assigned = 1u;
+
+    /* Avoid erasing/reprogramming Flash on every boot when nothing changed. */
+    if (!mid_flash_matches) {
+        mid_save_ok = save_mid_to_flash(module_mid);
+    }
+    if (!cfg_matches) {
+        cfg_save_ok = save_node_cfg_to_flash(&g_node_cfg);
+    }
+
+    uart6_log("[MID_SYNC_FROM_WISUN] module=%u old=%u flash=%s cfg=%s\r\n",
+              (unsigned)module_mid,
+              (unsigned)old_mid,
+              mid_flash_matches ? "unchanged" : (mid_save_ok ? "saved" : "fail"),
+              cfg_matches ? "unchanged" : (cfg_save_ok ? "saved" : "fail"));
+}
+
 void Parse_AT_Response(const char* buffer)
 {
     char dbg[128];
@@ -5139,21 +5371,8 @@ void Parse_AT_Response(const char* buffer)
     
     if (strncmp(buffer, "AT+MID=", 7) == 0) {
         int mid = atoi(buffer + 7);
-        if (mid >= 0 && mid <= 65535) {
-            my_mid = (uint16_t)mid;
-
-            g_node_cfg.mid          = my_mid;
-            g_node_cfg.mid_assigned = 1;
-
-            bool ok1 = save_mid_to_flash(my_mid);
-            bool ok2 = save_node_cfg_to_flash(&g_node_cfg);
-
-            char msg[80];
-            snprintf(msg, sizeof(msg),
-                     "Parsed MID: %u (save_mid=%d, save_cfg=%d)\r\n",
-                     my_mid, ok1, ok2);
-            HAL_UART_Transmit(&huart6, (uint8_t*)msg, strlen(msg), 50);
-
+        if (mid > 0 && mid < (int)MID_INVALID) {
+            sync_mid_from_wisun((uint16_t)mid);
             g_wait_mid_query = 0;
         }
     }
@@ -5241,7 +5460,19 @@ static int nodeinfo_append_kv_line(const char *line)
     if (tmp_len == 0) return 0;
 
     if (strncmp(tmp, "GID=",   4) == 0) g_nodeinfo.got_mask |= GOT_GID;
-	if (strncmp(tmp, "MID=",   4) == 0) g_nodeinfo.got_mask |= GOT_MID;
+	if (strncmp(tmp, "MID=",   4) == 0) {
+        char *end = NULL;
+        unsigned long module_mid;
+
+        g_nodeinfo.got_mask |= GOT_MID;
+        module_mid = strtoul(tmp + 4, &end, 10);
+        if (end != (tmp + 4) && *end == '\0' &&
+            module_mid > 0ul && module_mid < (unsigned long)MID_INVALID) {
+            sync_mid_from_wisun((uint16_t)module_mid);
+        } else {
+            uart6_log("[MID_SYNC_DROP] invalid_response=%s\r\n", tmp);
+        }
+    }
 	if (strncmp(tmp, "DEV=",   4) == 0) g_nodeinfo.got_mask |= GOT_DEV;
 	if (strncmp(tmp, "DSP=",   4) == 0) g_nodeinfo.got_mask |= GOT_DSP;
 	if (strncmp(tmp, "RCH=", 4) == 0) {

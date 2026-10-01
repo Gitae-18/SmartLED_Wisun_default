@@ -35,13 +35,59 @@ static uint16_t router_xorshift16(uint16_t x)
     return x;
 }
 
+uint32_t wisun_router_payload_signature(const uint8_t *data, uint16_t data_len)
+{
+    uint32_t hash = 2166136261u;
+
+    if (data == NULL && data_len != 0u) {
+        return 0u;
+    }
+
+    for (uint16_t i = 0u; i < data_len; ++i) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+
+    return hash;
+}
+
 void hop_tx_task_poll(void)
 {
     uint32_t now = HAL_GetTick();
 
     for (int i = 0; i < HOP_QUEUE_SIZE; ++i) {
+        uint32_t actual_signature;
+
         if (!g_hop_q[i].in_use) continue;
         if ((int32_t)(now - g_hop_q[i].due_tick) < 0) continue;
+
+        if (g_hop_q[i].data_len > HOP_MAX_FRAME) {
+            uart6_log("[HOP_DROP_CORRUPT] q=%d reason=bad_len len=%u cap=%u\r\n",
+                      i,
+                      (unsigned)g_hop_q[i].data_len,
+                      (unsigned)HOP_MAX_FRAME);
+            g_hop_q[i].in_use = 0u;
+            g_hop_q[i].compact_snap = 0u;
+            g_hop_q[i].data_signature = 0u;
+            continue;
+        }
+
+        actual_signature = wisun_router_payload_signature(g_hop_q[i].data,
+                                                           g_hop_q[i].data_len);
+        if (actual_signature != g_hop_q[i].data_signature) {
+            uart6_log("[HOP_DROP_CORRUPT] q=%d reason=signature len=%u stored=%08lX actual=%08lX\r\n",
+                      i,
+                      (unsigned)g_hop_q[i].data_len,
+                      (unsigned long)g_hop_q[i].data_signature,
+                      (unsigned long)actual_signature);
+            dbg_dump_uart6_with_tag("[HOP_CORRUPT_PAYLOAD]",
+                                    g_hop_q[i].data,
+                                    g_hop_q[i].data_len);
+            g_hop_q[i].in_use = 0u;
+            g_hop_q[i].compact_snap = 0u;
+            g_hop_q[i].data_signature = 0u;
+            continue;
+        }
 
         uint8_t ttl_idx = g_hop_q[i].compact_snap ? SNAP_COMPACT_TTL_IDX : 2u;
         uint8_t min_len = g_hop_q[i].compact_snap ? SNAP_COMPACT_BODY_LEN : 3u;
@@ -49,6 +95,7 @@ void hop_tx_task_poll(void)
         if (g_hop_q[i].data_len < min_len) {
             g_hop_q[i].in_use = 0u;
             g_hop_q[i].compact_snap = 0u;
+            g_hop_q[i].data_signature = 0u;
             continue;
         }
 
@@ -57,7 +104,25 @@ void hop_tx_task_poll(void)
             dbg_dump_uart6_with_tag("[HOP_DROP_TTL0]", g_hop_q[i].data, g_hop_q[i].data_len);
             g_hop_q[i].in_use = 0u;
             g_hop_q[i].compact_snap = 0u;
+            g_hop_q[i].data_signature = 0u;
             continue;
+        }
+
+        if (!g_hop_q[i].compact_snap &&
+            g_hop_q[i].data_len >= 7u &&
+            g_hop_q[i].data[3] == 0x46u) {
+            uint16_t queued_msg_id =
+                ((uint16_t)g_hop_q[i].data[5] << 8) |
+                (uint16_t)g_hop_q[i].data[6];
+
+            uart6_log("[FW_VERSION_QUEUE_TX] q=%d msg_id=%u payload_len=%u signature=%08lX\r\n",
+                      i,
+                      (unsigned)queued_msg_id,
+                      (unsigned)g_hop_q[i].data_len,
+                      (unsigned long)actual_signature);
+            dbg_dump_uart6_with_tag("[FW_VERSION_QUEUE_PAYLOAD]",
+                                    g_hop_q[i].data,
+                                    g_hop_q[i].data_len);
         }
 
         g_hop_q[i].data[ttl_idx] = (uint8_t)(ttl - 1u);
@@ -76,6 +141,7 @@ void hop_tx_task_poll(void)
 
         g_hop_q[i].in_use = 0u;
         g_hop_q[i].compact_snap = 0u;
+        g_hop_q[i].data_signature = 0u;
     }
 }
 
@@ -115,6 +181,8 @@ uint8_t enqueue_transport_tx(uint16_t tmid, uint8_t cmd, uint8_t flags, uint16_t
         g_hop_q[qi].compact_snap = 0u;
         g_hop_q[qi].data_len = payload_len;
         memcpy(g_hop_q[qi].data, payload, payload_len);
+        g_hop_q[qi].data_signature =
+            wisun_router_payload_signature(g_hop_q[qi].data, payload_len);
         g_hop_q[qi].due_tick = now + base_delay + jitter;
         g_hop_q[qi].in_use = 1u;
 

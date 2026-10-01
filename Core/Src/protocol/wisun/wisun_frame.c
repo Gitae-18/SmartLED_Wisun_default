@@ -5,7 +5,8 @@
 extern UART_HandleTypeDef huart6;
 extern void dbg_dump_uart6_with_tag(const char *tag, const uint8_t *p, uint16_t n);
 
-#define WISUN_SNAP_CMD 0x12u
+#define WISUN_SNAP_CMD       0x12u
+#define WISUN_FW_VERSION_CMD 0x46u
 
 static uint8_t xor_checksum(const uint8_t *p, size_t n){
     uint8_t x = 0;
@@ -20,6 +21,17 @@ static void log_outgoing_snap_frame(const uint8_t *frame, uint16_t frame_len, si
     if (frame[9] != WISUN_SNAP_CMD) return;
 
     dbg_dump_uart6_with_tag("[WISUN_FRAME_TX_SNAP_FINAL]", frame, frame_len);
+}
+
+static void log_outgoing_fw_version_frame(const uint8_t *frame,
+                                          uint16_t frame_len,
+                                          size_t data_len)
+{
+    if (!frame || frame_len < 15u || data_len < 7u) return;
+    if (frame[0] != 0x02u || frame[1] != 0xAAu || frame[2] != 0xABu) return;
+    if (frame[9] != WISUN_FW_VERSION_CMD) return;
+
+    dbg_dump_uart6_with_tag("[FW_VERSION_UART_FRAME]", frame, frame_len);
 }
 
 bool wisun_send_frame(const wisun_frame_cfg_t *cfg, const uint8_t *data, size_t data_len, wisun_tx_fn tx, void *user)
@@ -50,6 +62,7 @@ bool wisun_send_frame(const wisun_frame_cfg_t *cfg, const uint8_t *data, size_t 
     buf[i++] = 0x03;
 
     log_outgoing_snap_frame(buf, (uint16_t)i, data_len);
+    log_outgoing_fw_version_frame(buf, (uint16_t)i, data_len);
 
     return tx(buf, (uint16_t)i, user);
 }

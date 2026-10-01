@@ -19,6 +19,7 @@ typedef struct {
     uint16_t tmid;
     uint8_t  data[HOP_MAX_FRAME];
     uint16_t data_len;
+    uint32_t data_signature;
     uint32_t due_tick;
 } hop_slot_t;
 
@@ -31,6 +32,9 @@ uint8_t enqueue_transport_tx(uint16_t tmid,
                              uint8_t ttl);
 
 void hop_tx_task_poll(void);
+
+/* FNV-1a signature used to detect queued payload corruption/reuse. */
+uint32_t wisun_router_payload_signature(const uint8_t *data, uint16_t data_len);
 
 bool hop_seen_key(uint32_t key);
 void hop_mark_key(uint32_t key);
