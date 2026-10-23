@@ -284,11 +284,11 @@ typedef struct {
 #endif
 
 #ifndef APP_FW_VERSION
-#define APP_FW_VERSION "1.0.0"
+#define APP_FW_VERSION "1.0.3"
 #endif
 
 #ifndef AI_MODEL_VERSION_STRING
-#define AI_MODEL_VERSION_STRING "1.0.0"
+#define AI_MODEL_VERSION_STRING "1.0.3"
 #endif
 
 #ifndef DEBUG_FFT_DATA_EXTRACT_MODE
