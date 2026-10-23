@@ -103,7 +103,6 @@ typedef struct {
     uint32_t     due_tick;     
     uint8_t  cmd;
     uint8_t  result;
-
     
     uint8_t      buf[128];     
     uint16_t     len;
@@ -248,7 +247,7 @@ typedef struct {
 #define LIGHT_ACTIVE_LOW 0
 
 #ifndef UART6_TO_USART1_BRIDGE
-#define UART6_TO_USART1_BRIDGE 0
+#define UART6_TO_USART1_BRIDGE 1
 #endif
 
 #ifndef WISUN_BOOT_APPLY_AT_CFG
@@ -778,7 +777,14 @@ uint8_t light_event_node_ready(void)
 
 uint8_t light_event_tx_blocked(void)
 {
-    return ultra_sampling_paused ? 1u : 0u;
+    /*
+     * A paused ADC is the normal idle state between requested captures.  Do
+     * not use it as a TX gate: the light-event worker must be allowed to run
+     * while idle so it can request its own post-switch measurement.  Only
+     * defer the worker while the shared sensor pipeline is actively capturing
+     * or processing a frame.
+     */
+    return (g_sensor_pipeline_state != SENSOR_PIPELINE_IDLE) ? 1u : 0u;
 }
 
 static void wisun_activity_mark(uint32_t now)
