@@ -276,6 +276,24 @@ void light_control_clear_manual_override(void)
     g_manual_override_latch_off_on_expire = 0u;
 }
 
+void light_control_timeout_poll(uint32_t now_tick)
+{
+    if (!g_manual_override_active ||
+        g_manual_override_no_timeout ||
+        !g_manual_override_latch_off_on_expire ||
+        ((int32_t)(now_tick - g_manual_override_until) < 0)) {
+        return;
+    }
+
+    g_manual_override_latch_off_on_expire = 0u;
+    timing_log("[TLOG_FORCED_EXPIRE] t=%lu until=%lu state=OFF\r\n",
+               (unsigned long)now_tick,
+               (unsigned long)g_manual_override_until);
+    light_event_set_reason(LIGHT_EVENT_REASON_FORCED_EXPIRE);
+    start_manual_override_for(0u, 0u);
+    light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
+}
+
 void scheduler_poll(void)
 {
     RTC_TimeTypeDef t;

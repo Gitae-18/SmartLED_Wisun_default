@@ -37,12 +37,37 @@ extern "C" {
 #define LIGHT_EVENT_VALID_FFT   0x08u
 #define LIGHT_EVENT_VALID_RTC   0x10u
 
-#define LIGHT_EVENT_REQUIRED_SENSOR_FLAGS \
-    (LIGHT_EVENT_VALID_LIGHT | LIGHT_EVENT_VALID_VI | LIGHT_EVENT_VALID_TEMP | LIGHT_EVENT_VALID_FFT)
+#define LIGHT_EVENT_RUL_PERCENT_INVALID 0xFFFFu
 
-#define LIGHT_STATE_EVENT_BODY_LEN \
-    (1u + 12u + 4u + 1u + 1u + 1u + 1u + 4u + 4u + 4u + 4u + 1u + \
-     (8u * LIGHT_EVENT_FFT_PAIRS) + 2u + 1u + 1u + 1u + 1u + 1u + 1u)
+#define LIGHT_EVENT_REQUIRED_SENSOR_FLAGS \
+    (LIGHT_EVENT_VALID_LIGHT | LIGHT_EVENT_VALID_VI | LIGHT_EVENT_VALID_TEMP)
+
+/*
+ * Compact Light State Event V3 layout (40-byte body).
+ * Together with the 7-byte transport header and 8-byte Wi-SUN AB envelope,
+ * the complete on-air frame is 55 bytes, matching Compact SNAP V3.
+ *
+ *   0       : command (0x15)
+ *   1..12   : uid[12]
+ *   13      : valid_flags
+ *   14      : light_on
+ *   15      : control mode
+ *   16      : event reason
+ *   17..20  : voltage float32, little endian
+ *   21..24  : current float32, little endian
+ *   25..28  : temperature float32, little endian
+ *   29      : FFT pair count (0 or 1)
+ *   30..33  : FFT frequency x100 uint32, little endian
+ *   34..37  : FFT amplitude x1000 int32, little endian
+ *   38..39  : RUL percent x100 uint16, little endian
+ *
+ * The event sequence is carried by the transport msg_id.  tick_ms, detailed
+ * RTC fields, and the second FFT pair are intentionally omitted on the wire.
+ */
+#define LIGHT_STATE_EVENT_BODY_LEN_V1 62u
+#define LIGHT_STATE_EVENT_BODY_LEN_V2 64u
+#define LIGHT_STATE_EVENT_BODY_LEN_V3 40u
+#define LIGHT_STATE_EVENT_BODY_LEN    LIGHT_STATE_EVENT_BODY_LEN_V3
 
 typedef struct {
     uint8_t  pending;
@@ -65,6 +90,7 @@ typedef struct {
     uint8_t  rtc_min;
     uint8_t  rtc_sec;
     uint8_t  rtc_synced;
+    uint16_t rul_percent_x100;
 } light_state_event_t;
 
 typedef uint8_t (*light_event_send_fn)(uint16_t target_mid,
@@ -95,6 +121,9 @@ void light_event_set_send_hook(light_event_send_fn fn, void *user);
 void light_event_set_ready_hook(light_event_state_fn fn, void *user);
 void light_event_set_tx_blocked_hook(light_event_state_fn fn, void *user);
 uint8_t light_event_pending_count(void);
+
+/* Implemented by the application; the weak default reports unavailable. */
+uint16_t light_event_get_rul_percent_x100(void);
 
 #ifdef __cplusplus
 }

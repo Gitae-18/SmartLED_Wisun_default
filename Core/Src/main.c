@@ -284,7 +284,7 @@ typedef struct {
 #endif
 
 #ifndef APP_FW_VERSION
-#define APP_FW_VERSION "1.0.3"
+#define APP_FW_VERSION "1.0.5"
 #endif
 
 #ifndef AI_MODEL_VERSION_STRING
@@ -785,6 +785,11 @@ uint8_t light_event_tx_blocked(void)
      * or processing a frame.
      */
     return (g_sensor_pipeline_state != SENSOR_PIPELINE_IDLE) ? 1u : 0u;
+}
+
+uint16_t light_event_get_rul_percent_x100(void)
+{
+    return scale_rul_percent_x100(AI_Runtime_GetRULPercent());
 }
 
 static void wisun_activity_mark(uint32_t now)
@@ -2847,7 +2852,9 @@ void Send_Monitoring_Snapshot_JSON(uint16_t req_msg_id)
     }
 
     suppress_tx =
-        ((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) == 0u) ? 1u : 0u;
+        (((g_sensor_capture_active & SENSOR_CAPTURE_SNAPSHOT) == 0u) ||
+         ((g_snapshot_suppress_next_tx != 0u) && (req_msg_id == 0u)))
+            ? 1u : 0u;
     run_ai =
         ((g_sensor_capture_active & SENSOR_CAPTURE_AI) != 0u) ? 1u : 0u;
     if (run_ai) {
@@ -4116,6 +4123,7 @@ int main(void)
 	         // ===================== Node Info / Wi-SUN App =====================
 	         nodeinfo_poll(now);
 	         wisun_app_poll(now);
+	         light_control_timeout_poll(now);
 	         rtc_scheduler_poll(now);
 	         wisun_idle_reset_poll(HAL_GetTick());
 #if SNAP_REPORT_ACK_ENABLE

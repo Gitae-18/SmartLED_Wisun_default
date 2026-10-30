@@ -43,6 +43,11 @@ __attribute__((weak)) uint8_t current_control_mode(void)
     return 0u;
 }
 
+__attribute__((weak)) uint16_t light_event_get_rul_percent_x100(void)
+{
+    return LIGHT_EVENT_RUL_PERCENT_INVALID;
+}
+
 __attribute__((weak)) uint8_t light_event_send_transport(uint16_t target_mid,
                                                          uint8_t ttl,
                                                          uint8_t cmd,
@@ -279,16 +284,10 @@ uint16_t light_state_event_encode(uint8_t *out, uint16_t out_cap, const light_st
     light_event_pack_uid12(&out[off]);
     off += 12u;
 
-    memcpy(&out[off], &ev->event_id, sizeof(ev->event_id));
-    off += (uint16_t)sizeof(ev->event_id);
-
     out[off++] = ev->valid_flags;
     out[off++] = ev->light_on;
     out[off++] = ev->mode;
     out[off++] = ev->reason;
-
-    memcpy(&out[off], &ev->tick_ms, sizeof(ev->tick_ms));
-    off += (uint16_t)sizeof(ev->tick_ms);
 
     memcpy(&out[off], &ev->voltage, sizeof(ev->voltage));
     off += (uint16_t)sizeof(ev->voltage);
@@ -299,17 +298,17 @@ uint16_t light_state_event_encode(uint8_t *out, uint16_t out_cap, const light_st
     memcpy(&out[off], &ev->temp, sizeof(ev->temp));
     off += (uint16_t)sizeof(ev->temp);
 
-    out[off++] = ev->fft_count;
+    out[off++] = (ev->fft_count > 0u) ? 1u : 0u;
 
-    for (uint8_t k = 0u; k < LIGHT_EVENT_FFT_PAIRS; ++k) {
+    {
         float freq = 0.0f;
         float amp = 0.0f;
         uint32_t freq_x100;
         int32_t amp_x1000;
 
-        if (k < ev->fft_count) {
-            freq = ev->fft_freq[k];
-            amp = ev->fft_amp[k];
+        if (ev->fft_count > 0u) {
+            freq = ev->fft_freq[0];
+            amp = ev->fft_amp[0];
         }
 
         freq_x100 = light_event_scale_fft_freq_x100(freq);
@@ -322,16 +321,17 @@ uint16_t light_state_event_encode(uint8_t *out, uint16_t out_cap, const light_st
         off += (uint16_t)sizeof(amp_x1000);
     }
 
-    memcpy(&out[off], &ev->rtc_year, sizeof(ev->rtc_year));
-    off += (uint16_t)sizeof(ev->rtc_year);
-    out[off++] = ev->rtc_month;
-    out[off++] = ev->rtc_day;
-    out[off++] = ev->rtc_hour;
-    out[off++] = ev->rtc_min;
-    out[off++] = ev->rtc_sec;
-    out[off++] = ev->rtc_synced;
+    {
+        uint16_t rul_percent_x100 = ev->rul_percent_x100;
 
-    return off;
+        if (rul_percent_x100 > 10000u) {
+            rul_percent_x100 = LIGHT_EVENT_RUL_PERCENT_INVALID;
+        }
+        out[off++] = (uint8_t)(rul_percent_x100 & 0xFFu);
+        out[off++] = (uint8_t)((rul_percent_x100 >> 8) & 0xFFu);
+    }
+
+    return (off == LIGHT_STATE_EVENT_BODY_LEN) ? off : 0u;
 }
 
 void light_event_set_reason(uint8_t reason)
@@ -350,7 +350,7 @@ void light_sensor_cache_update(float voltage,
 {
     light_event_sensor_cache_t cache;
 
-    if (fft_count == 0u || fft_freq == NULL || fft_amp == NULL) {
+    if (fft_count > 0u && (fft_freq == NULL || fft_amp == NULL)) {
         return;
     }
 
@@ -544,6 +544,8 @@ void light_state_event_poll(void)
                    (unsigned)ev.rtc_synced);
     }
 
+    ev.rul_percent_x100 = light_event_get_rul_percent_x100();
+
     __disable_irq();
     if (g_light_event_count > 0u) {
         g_light_event_q[g_light_event_head] = ev;
@@ -572,7 +574,7 @@ void light_state_event_poll(void)
 
     snapshot_note_light_event_tx();
 
-    timing_log("[TLOG_LIGHT_EVT_TX] t=%lu event=%lu light=%u mode=%u reason=%u msg=%u flags=0x%02X temp=%f fft_count=%u fft0=%f/%f rtc=%04u-%02u-%02u %02u:%02u:%02u sync=%u\r\n",
+    timing_log("[TLOG_LIGHT_EVT_TX] t=%lu event=%lu light=%u mode=%u reason=%u msg=%u flags=0x%02X temp=%f fft_count=%u fft0=%f/%f rtc=%04u-%02u-%02u %02u:%02u:%02u sync=%u rul_x100=%u\r\n",
                (unsigned long)HAL_GetTick(),
                (unsigned long)ev.event_id,
                (unsigned)ev.light_on,
@@ -590,7 +592,8 @@ void light_state_event_poll(void)
                (unsigned)ev.rtc_hour,
                (unsigned)ev.rtc_min,
                (unsigned)ev.rtc_sec,
-               (unsigned)ev.rtc_synced);
+               (unsigned)ev.rtc_synced,
+               (unsigned)ev.rul_percent_x100);
 
     __disable_irq();
     if (g_light_event_count > 0u) {

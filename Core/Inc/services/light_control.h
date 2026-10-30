@@ -32,6 +32,7 @@ void start_manual_override(uint8_t want_on);
 void start_manual_override_for(uint8_t want_on, uint16_t duration_min);
 void start_forced_time_control(uint16_t forced_time_min);
 void light_control_clear_manual_override(void);
+void light_control_timeout_poll(uint32_t now_tick);
 
 uint16_t apply_time_correction_min(uint16_t base_min, uint8_t corr_mode, uint16_t corr_delta_min);
 uint8_t time_window_contains(uint16_t now_min, uint16_t start_min, uint16_t end_min);
