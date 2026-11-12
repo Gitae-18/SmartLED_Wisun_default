@@ -1057,20 +1057,23 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	        {
 	            pc_rx_buffer[pc_rx_index++] = rxByte;
 
-	            if (rxByte == '\n')
+	            if (rxByte == '\r' || rxByte == '\n')
 	            {
 	                uint8_t crlf[] = "\r\n";
 
-	                if (pc_rx_index >= 2 && pc_rx_buffer[pc_rx_index - 2] == '\r') {
-	                    pc_rx_index -= 2;
-	                } else {
-	                    pc_rx_index -= 1;
+	                while (pc_rx_index > 0u &&
+	                       (pc_rx_buffer[pc_rx_index - 1u] == '\r' ||
+	                        pc_rx_buffer[pc_rx_index - 1u] == '\n')) {
+	                    pc_rx_index--;
 	                }
 	                pc_rx_buffer[pc_rx_index] = '\0';
 
-	                if (!try_handle_uart6_local_cmd((const char *)pc_rx_buffer)) {
+	                /* Ignore the LF half of CRLF after CR already handled the line. */
+	                if (pc_rx_index > 0u &&
+	                    !try_handle_uart6_local_cmd((const char *)pc_rx_buffer)) {
 #if UART6_TO_USART1_BRIDGE
-	                    HAL_UART_Transmit(&huart1, (uint8_t *)pc_rx_buffer, pc_rx_index, HAL_MAX_DELAY);
+	                    HAL_UART_Transmit(&huart1, (uint8_t *)pc_rx_buffer,
+	                                      pc_rx_index, HAL_MAX_DELAY);
 	                    HAL_UART_Transmit(&huart1, crlf, 2, HAL_MAX_DELAY);
 #endif
 	                    HAL_UART_Transmit(&huart6, (uint8_t *)pc_rx_buffer, pc_rx_index, HAL_MAX_DELAY);
@@ -1090,7 +1093,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
 	    }
 		else if (huart->Instance == USART1) {
-
 		    if (packet_state == WAITING_FOR_STX) {		        
 		        if (rxByte1 == PACKET_STX) {
 		            wisun_rx_index = 0;
@@ -1157,6 +1159,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		    }		
 		    HAL_UART_Receive_IT(&huart1, &rxByte1, 1);
 	}
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart != NULL && huart->Instance == USART1) {
+        /* Drop any partial frame/line after a UART framing or overrun error. */
+        wisun_rx_index = 0u;
+        ascii_index = 0u;
+        packet_state = WAITING_FOR_STX;
+
+        (void)HAL_UART_AbortReceive(huart);
+        (void)HAL_UART_Receive_IT(huart, &rxByte1, 1u);
+    }
 }
 
 
@@ -2246,6 +2261,41 @@ static uint8_t try_handle_uart6_local_cmd(const char *line)
 
     if (strncmp(tmp, "SNAP=", 5) == 0) {
         return apply_snapshot_uart_cmd(tmp + 5);
+    }
+
+    if (strcmp(tmp, "LIGHT=ON") == 0) {
+        light_event_set_reason(LIGHT_EVENT_REASON_CMD);
+        start_manual_override_for(1u, 0u);
+        light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
+        g_last_light_control_tick = HAL_GetTick();
+        snprintf(msg, sizeof(msg),
+                 "[UART LIGHT] command=ON light=%u manual=%u hold=forever\r\n",
+                 (unsigned)light_is_on_logical(),
+                 (unsigned)light_control_manual_active());
+        debug6(msg);
+        return 1u;
+    }
+
+    if (strcmp(tmp, "LIGHT=OFF") == 0) {
+        light_event_set_reason(LIGHT_EVENT_REASON_CMD);
+        start_manual_override_for(0u, 0u);
+        light_event_set_reason(LIGHT_EVENT_REASON_UNKNOWN);
+        g_last_light_control_tick = HAL_GetTick();
+        snprintf(msg, sizeof(msg),
+                 "[UART LIGHT] command=OFF light=%u manual=%u hold=forever\r\n",
+                 (unsigned)light_is_on_logical(),
+                 (unsigned)light_control_manual_active());
+        debug6(msg);
+        return 1u;
+    }
+
+    if (strcmp(tmp, "LIGHT?") == 0) {
+        snprintf(msg, sizeof(msg),
+                 "[UART LIGHT] light=%u manual=%u\r\n",
+                 (unsigned)light_is_on_logical(),
+                 (unsigned)light_control_manual_active());
+        debug6(msg);
+        return 1u;
     }
 
     return 0;
@@ -5332,7 +5382,7 @@ void Query_MID_From_WiSUN(void) {
     char t[64];
     snprintf(t, sizeof(t), "[MID? set wait=1]\r\n");
     HAL_UART_Transmit(&huart6, (uint8_t*)t, strlen(t), 50);
-    HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart1, (uint8_t*)cmd, (uint16_t)strlen(cmd), HAL_MAX_DELAY);
 }
 
 static void sync_mid_from_wisun(uint16_t module_mid)
