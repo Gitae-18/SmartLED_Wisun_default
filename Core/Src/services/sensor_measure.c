@@ -59,7 +59,8 @@ uint8_t ntc_voltage_to_temp_c_checked(float temp_v, float *out_temp_c)
         return 0u;
     }
 
-    if (temp_v < 0.35f || temp_v > 3.15f) {
+    if (temp_v < ntc_voltage_table[NTC_LUT_SIZE - 1] ||
+        temp_v > ntc_voltage_table[0]) {
         return 0u;
     }
 
@@ -69,8 +70,7 @@ uint8_t ntc_voltage_to_temp_c_checked(float temp_v, float *out_temp_c)
         return 0u;
     }
 
-    if (temp_c < NTC_VALID_TEMP_MIN_C || temp_c > NTC_VALID_TEMP_MAX_C) {
-        *out_temp_c = NTC_INVALID_TEMP_C;
+    if (temp_c < NTC_SENSOR_TEMP_MIN_C || temp_c > NTC_SENSOR_TEMP_MAX_C) {
         return 0u;
     }
 

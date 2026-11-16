@@ -51,8 +51,8 @@ extern "C" {
 #define ACS712_SENS_V_PER_A 0.100f
 #endif
 
-#define NTC_VALID_TEMP_MIN_C   (-20.0f)
-#define NTC_VALID_TEMP_MAX_C   (65.0f)
+#define NTC_SENSOR_TEMP_MIN_C  (-40.0f)
+#define NTC_SENSOR_TEMP_MAX_C  (80.0f)
 #define NTC_INVALID_TEMP_C   (-999.0f)
 
 
