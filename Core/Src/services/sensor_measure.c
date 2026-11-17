@@ -13,14 +13,16 @@ static const float ntc_temp_table[NTC_LUT_SIZE] = {
     -40.000000f, -35.000000f, -30.000000f, -25.000000f, -20.000000f, -15.000000f, -10.000000f, -5.000000f,
     0.000000f,   5.000000f,   10.000000f,  15.000000f,  20.000000f,  25.000000f,  30.000000f,  35.000000f,
     40.000000f,  45.000000f,  50.000000f,  55.000000f,  60.000000f,  65.000000f,  70.000000f,  75.000000f,
-    80.000000f
+    80.000000f,  85.000000f,  90.000000f,  95.000000f, 100.000000f, 105.000000f, 110.000000f, 115.000000f,
+   120.000000f
 };
 
 static const float ntc_voltage_table[NTC_LUT_SIZE] = {
     3.197196f, 3.162500f, 3.117680f, 3.060870f, 2.988679f, 2.902410f, 2.800000f, 2.677358f,
     2.532558f, 2.357143f, 2.200000f, 1.980000f, 1.800000f, 1.650000f, 1.466259f, 1.291357f,
     1.128233f, 0.979325f, 0.845373f, 0.726901f, 0.623167f, 0.533168f, 0.455663f, 0.389177f,
-    0.332641f
+    0.332641f, 0.284649f, 0.243595f, 0.208955f, 0.179728f, 0.154746f, 0.133621f, 0.115594f,
+    0.100155f
 };
 
 float ntc_voltage_to_temp_c(float temp_v)
@@ -59,8 +61,7 @@ uint8_t ntc_voltage_to_temp_c_checked(float temp_v, float *out_temp_c)
         return 0u;
     }
 
-    if (temp_v < ntc_voltage_table[NTC_LUT_SIZE - 1] ||
-        temp_v > ntc_voltage_table[0]) {
+    if (temp_v < NTC_VALID_VOLT_MIN_V || temp_v > NTC_VALID_VOLT_MAX_V) {
         return 0u;
     }
 

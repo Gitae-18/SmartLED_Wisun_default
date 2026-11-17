@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #ifndef NTC_LUT_SIZE
-#define NTC_LUT_SIZE 25
+#define NTC_LUT_SIZE 33
 #endif
 
 #ifndef ADC_MAX_COUNTS
@@ -52,7 +52,9 @@ extern "C" {
 #endif
 
 #define NTC_SENSOR_TEMP_MIN_C  (-40.0f)
-#define NTC_SENSOR_TEMP_MAX_C  (80.0f)
+#define NTC_SENSOR_TEMP_MAX_C  (120.0f)
+#define NTC_VALID_VOLT_MIN_V    (0.086132f)
+#define NTC_VALID_VOLT_MAX_V    (3.211625f)
 #define NTC_INVALID_TEMP_C   (-999.0f)
 
 
